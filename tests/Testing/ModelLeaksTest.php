@@ -21,6 +21,9 @@ use Tinvar\Orm\Orm;
 use Tinvar\Orm\PdoConnection;
 use Tinvar\Support\Uuid;
 use Tinvar\Testing\ModelLeaks;
+use Tinvar\Tests\Orm\Fixtures\Tenancy;
+
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/tenancy.php';
 
 #[Table('leak_accounts'), TenantScoped]
 final class Account extends Model
@@ -39,7 +42,7 @@ function accounts(): array
     $id = Uuid::v7();
     $pdo->prepare('INSERT INTO leak_accounts VALUES (?, ?, ?)')->execute([$id, HASH, 'acme']);
 
-    $orm = new Orm(new PdoConnection($pdo), new IdentityMap('test'));
+    $orm = new Orm(new PdoConnection($pdo), new IdentityMap('test'), tenants: Tenancy::flat());
     // As the client does around a render.
     $orm->recordReads(true);
 
