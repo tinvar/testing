@@ -8,7 +8,7 @@ use PHPUnit\Framework\Assert;
 use Tinvar\Data\Data;
 use Tinvar\Data\DataShape;
 use Tinvar\Data\Encoder;
-use Tinvar\Data\Lazy;
+use Tinvar\Support\Lazy;
 use Tinvar\Http\Kernel;
 use Tinvar\Routing\PartialReload;
 
