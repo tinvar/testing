@@ -1,0 +1,19 @@
+{
+  "name": "tinvar/testing",
+  "description": "Tinvar's testing layer: get(), actingAs(), query(), the fakes and the model-leak check. Required for development only.",
+  "type": "library",
+  "license": "MIT",
+  "require": {
+    "php": ">=8.5",
+    "tinvar/database": "0.4.*",
+    "tinvar/framework": "0.4.*",
+    "tinvar/support": "0.4.*"
+  },
+  "autoload": {
+    "psr-4": {
+      "Tinvar\\Testing\\": "src/Testing/"
+    }
+  },
+  "config": { "sort-packages": true },
+  "minimum-stability": "stable"
+}
