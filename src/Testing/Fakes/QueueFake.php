@@ -147,6 +147,11 @@ final class QueueFake implements Queue
         return $this->queue->release($job, $availableAt);
     }
 
+    public function requeue(ReservedJob $job, int $availableAt, ?string $payload = null): bool
+    {
+        return $this->queue->requeue($job, $availableAt, $payload);
+    }
+
     public function fail(ReservedJob $job, string $error, int $failedAt): bool
     {
         return $this->queue->fail($job, $error, $failedAt);
