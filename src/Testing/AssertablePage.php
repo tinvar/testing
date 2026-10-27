@@ -152,7 +152,9 @@ final class AssertablePage
     /**
      * The shared value $key -- what `shared('customer')` reads -- asserted
      * inside $scope, as the renderer would be handed it. A null one is
-     * asserted with sharedIsNull().
+     * asserted with sharedIsNull(). A once key's value is the one its once
+     * field carries; one the browser holds, sent without it, is asserted
+     * with sharedIsHeld() (ADR 0065).
      */
     public function shared(string $key, \Closure $scope): self
     {
@@ -174,7 +176,34 @@ final class AssertablePage
         return $this;
     }
 
+    /**
+     * The once-shared value $key was left out: the request proved, by a hold
+     * this session, user, tenant, panel and build verify, that the browser
+     * keeps what it draws, and its method was not called (ADR 0065).
+     */
+    public function sharedIsHeld(string $key): self
+    {
+        $value = $this->sharedOutcome($key);
+        Assert::assertTrue(
+            \is_array($value) && isset($value[Encoder::ONCE_KEY]) && ($value['held'] ?? false) === true,
+            "The shared value '{$key}' was sent, not held.",
+        );
+
+        return $this;
+    }
+
     private function sharedValue(string $key): mixed
+    {
+        $value = $this->sharedOutcome($key);
+        if (!\is_array($value) || !isset($value[Encoder::ONCE_KEY])) {
+            return $value;
+        }
+        Assert::assertArrayHasKey('value', $value, "The shared value '{$key}' is held by the browser, and was not sent. Assert it with sharedIsHeld().");
+
+        return $value['value'];
+    }
+
+    private function sharedOutcome(string $key): mixed
     {
         $recorded = $this->topLevel('shared()')->recorded();
         Assert::assertArrayHasKey($key, $recorded->shared, "The page reads no shared value '{$key}'. It reads: " . (implode(', ', array_keys($recorded->shared)) ?: 'none') . '.');
