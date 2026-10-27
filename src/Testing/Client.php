@@ -6,7 +6,9 @@ namespace Tinvar\Testing;
 
 use Tinvar\Attributes\PublicAccess;
 use Tinvar\Auth\Authenticatable;
+use Tinvar\Auth\DenyGate;
 use Tinvar\Data\Encoder;
+use Tinvar\Data\SharedReads;
 use Tinvar\Http\Endpoints\ActionEndpoint;
 use Tinvar\Http\ExceptionHandler;
 use Tinvar\Http\Kernel;
@@ -178,8 +180,9 @@ final readonly class Client
             // the tenant and scope a Lazy field resolves under. The data
             // boundary is part of what a page test covers -- a model in a
             // loader's Data fails here as it fails in production.
-            $encoded = $kernel->orm->readOnly(static fn (): array => $loaded->encode($encoder));
-            $recorded[] = new RecordedRender($loaded, $passed, $encoded, $kernel->orm->connection()->statementCount());
+            $encoded = $kernel->orm->readOnly(static fn (): array => $loaded->encode($encoder, $passed));
+            $statements = $kernel->orm->connection()->statementCount();
+            $recorded[] = new RecordedRender($loaded, $passed, $encoded, $statements, self::shared($kernel, $loaded, $passed, $encoder));
 
             return Response::make(200, '', ['content-type' => $passed->wantsRscPayload() ? 'text/x-component' : 'text/html; charset=utf-8']);
         };
@@ -190,6 +193,41 @@ final readonly class Client
         $response = $this->app->handleWith($request, $respond);
 
         return new PageResponse($this, $url, $request, $response, $recorded, $response->status >= 500 ? $this->app->lastFailure() : null, $loads?->since($from));
+    }
+
+    /**
+     * Every shared key the render may read, read as the renderer reads them:
+     * as `$shared.key` calls through a query runner, inside the request, so
+     * a key is produced in the render's panel and tenant, for its user, and
+     * encoded on the boundary's terms (ADR 0060). All of them, since no
+     * component is here to say which it would have read; after the
+     * statement count is taken, so a page's budget is still its loaders'.
+     *
+     * @return array<string, array{value: mixed}|array{error: array{code: string, digest: string, message?: string}}>
+     */
+    private static function shared(Kernel $kernel, LoadedRoute $loaded, Request $passed, Encoder $encoder): array
+    {
+        $shared = $kernel->shared($loaded, $passed);
+        if ($shared === null || $shared->keys() === []) {
+            return [];
+        }
+
+        $keys = $shared->keys();
+        $calls = array_map(
+            static fn (int $id, string $key): array => ['id' => $id, 'name' => SharedReads::PREFIX . $key, 'args' => []],
+            array_keys($keys),
+            $keys,
+        );
+        // No query is among the calls, so no gate is asked; one that would
+        // be is refused.
+        $runner = new QueryRunner($kernel->queries, $kernel->orm, new DenyGate(), $encoder, debug: true);
+
+        $out = [];
+        foreach ($runner->run($calls, [], $shared) as $result) {
+            $out[$keys[$result['id']]] = isset($result['error']) ? ['error' => $result['error']] : ['value' => $result['value'] ?? null];
+        }
+
+        return $out;
     }
 
     /**

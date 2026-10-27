@@ -150,6 +150,43 @@ final class AssertablePage
     }
 
     /**
+     * The shared value $key -- what `shared('customer')` reads -- asserted
+     * inside $scope, as the renderer would be handed it. A null one is
+     * asserted with sharedIsNull().
+     */
+    public function shared(string $key, \Closure $scope): self
+    {
+        $value = $this->sharedValue($key);
+        Assert::assertNotNull($value, "The shared value '{$key}' is null.");
+
+        $shared = new self($value, null, "shared '{$key}'", $this->topLevel('shared()'));
+        $scope($shared);
+        $shared->assertInteracted();
+
+        return $this;
+    }
+
+    /** The shared value $key is null: nobody, say, for the signed-in customer. */
+    public function sharedIsNull(string $key): self
+    {
+        Assert::assertNull($this->sharedValue($key), "The shared value '{$key}' is not null.");
+
+        return $this;
+    }
+
+    private function sharedValue(string $key): mixed
+    {
+        $recorded = $this->topLevel('shared()')->recorded();
+        Assert::assertArrayHasKey($key, $recorded->shared, "The page reads no shared value '{$key}'. It reads: " . (implode(', ', array_keys($recorded->shared)) ?: 'none') . '.');
+        $outcome = $recorded->shared[$key];
+        if (isset($outcome['error'])) {
+            Assert::fail("The shared value '{$key}' failed: {$outcome['error']['code']}" . (isset($outcome['error']['message']) ? " ({$outcome['error']['message']})" : '') . '.');
+        }
+
+        return $outcome['value'] ?? null;
+    }
+
+    /**
      * $key is a Lazy field: resolved only when a component reads it, and
      * streamed in behind a Suspense boundary rather than held up front.
      */

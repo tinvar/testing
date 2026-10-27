@@ -19,12 +19,16 @@ final readonly class RecordedRender
      *        as the renderer is handed it, encoded inside the request
      * @param int $statements statements the request had issued by then: its middleware,
      *        checks and loaders
+     * @param array<string, array{value: mixed}|array{error: array{code: string, digest: string, message?: string}}> $shared
+     *        each shared key the render may read, by key: its value as the renderer is handed
+     *        it, or its error (ADR 0060)
      */
     public function __construct(
         public LoadedRoute $loaded,
         public Request $request,
         public array $encoded,
         public int $statements,
+        public array $shared = [],
     ) {}
 
     /** Whether this was the #[ErrorPage] a failed document request is answered with. */
