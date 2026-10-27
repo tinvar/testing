@@ -213,6 +213,55 @@ it('refuses a run another user could reach into', function (string $file, int $m
     'the clock' => ['clock', 0620],
 ])->throws(\RuntimeException::class, 'is not private to this user');
 
+it('refuses a users or clock file that is a link', function (string $file) {
+    ['directory' => $directory] = BrowserTestRun::prepare();
+    $elsewhere = (string) tempnam(sys_get_temp_dir(), 'tinvar-run-');
+    chmod($elsewhere, 0600);
+    unlink("{$directory}/{$file}");
+    symlink($elsewhere, "{$directory}/{$file}");
+    try {
+        BrowserTestRun::open($directory);
+    } finally {
+        unlink($elsewhere);
+        BrowserTestRun::remove($directory);
+    }
+})->with(['users', 'clock'])->throws(\RuntimeException::class, 'is not one a run made');
+
+it('refuses a run whose token file holds no token\'s hash', function () {
+    ['directory' => $directory] = BrowserTestRun::prepare();
+    file_put_contents("{$directory}/token.sha256", 'chosen');
+    try {
+        BrowserTestRun::open($directory);
+    } finally {
+        BrowserTestRun::remove($directory);
+    }
+})->throws(\RuntimeException::class, 'holds no token');
+
+it('refuses a clock it did not write', function (string $clock) {
+    ['directory' => $directory] = BrowserTestRun::prepare();
+    file_put_contents("{$directory}/clock", $clock);
+    try {
+        BrowserTestRun::open($directory)->offset();
+    } finally {
+        BrowserTestRun::remove($directory);
+    }
+})->with(['', 'soon', '1e9', '0400', '999999999999'])->throws(\RuntimeException::class, 'does not hold a clock offset');
+
+// Read and written under one lock: a second process's move is not lost.
+it('counts every move of the clock', function () {
+    ['directory' => $directory] = BrowserTestRun::prepare();
+    try {
+        $one = BrowserTestRun::open($directory);
+        $two = BrowserTestRun::open($directory);
+        $one->travel(60);
+        $two->travel(60);
+        expect($one->travel(-30))->toBe(90)
+            ->and($two->offset())->toBe(90);
+    } finally {
+        BrowserTestRun::remove($directory);
+    }
+});
+
 it('refuses a token file that is a link', function () {
     ['directory' => $directory] = BrowserTestRun::prepare();
     $elsewhere = (string) tempnam(sys_get_temp_dir(), 'tinvar-hash-');
@@ -258,6 +307,16 @@ it('leaves a request naming another host to the application', function () {
             ->and($app->seeded)->toBe([]);
     });
 });
+
+// A proxy on this machine makes every request look like a loopback one.
+it('leaves a request that came through a proxy to the application', function (string $header) {
+    served(function (BrowserTests $tests, Recorder $app, string $token) use ($header): void {
+        $response = call($tests, '/_test/seed', $token, ['scenario' => 'customer'], [$header => '203.0.113.9']);
+
+        expect($response->body())->toBe('the application\'s own 404')
+            ->and($app->seeded)->toBe([]);
+    });
+})->with(['forwarded', 'x-forwarded-for', 'x-forwarded-host', 'x-forwarded-proto', 'x-real-ip', 'via']);
 
 it('leaves a request without the run\'s token to the application', function (?string $token) {
     served(function (BrowserTests $tests, Recorder $app) use ($token): void {

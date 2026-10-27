@@ -52,9 +52,30 @@ final class BrowserTestEndpoint
         return $request->path === self::PREFIX || str_starts_with($request->path, self::PREFIX . '/');
     }
 
-    /** Whether $request may be answered here: from loopback, with the run's token. */
+    /**
+     * Headers a proxy adds: a request carrying one came through something
+     * that forwards it, from wherever its client is, however loopback its
+     * last hop looks.
+     */
+    public const array FORWARDED = ['forwarded', 'x-forwarded-for', 'x-forwarded-host', 'x-forwarded-proto', 'x-real-ip', 'via'];
+
+    /**
+     * Whether $request may be answered here: from loopback, naming loopback,
+     * through no proxy, with the run's token.
+     *
+     * A proxy on this machine -- a TLS terminator in front of a test server
+     * -- would make every request from anywhere look like a loopback one,
+     * naming the address it was passed to; the headers proxies add are
+     * refused so the token is not then the only thing left.
+     */
     public function admits(Request $request): bool
     {
+        foreach (self::FORWARDED as $header) {
+            if ($request->hasHeader($header)) {
+                return false;
+            }
+        }
+
         return Loopback::request($request) && $this->run->admits($request->header(BrowserTestRun::HEADER));
     }
 
@@ -156,7 +177,7 @@ final class BrowserTestEndpoint
             if (!\is_int($travel)) {
                 throw new \InvalidArgumentException('`travel` is a whole number of seconds.');
             }
-            $this->run->moveClock($this->run->offset() + $travel);
+            $this->run->travel($travel);
         } elseif ($at !== null) {
             if (!\is_int($at) || $at <= 0) {
                 throw new \InvalidArgumentException('`at` is a unix time.');
