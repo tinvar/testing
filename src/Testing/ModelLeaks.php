@@ -91,6 +91,22 @@ final class ModelLeaks
             }
         }
 
+        // A column read without a model -- pluck(), min(), max() -- is held
+        // to the same fields as the model's own column.
+        foreach ($orm->columnReadsRecorded() as $read) {
+            $meta = Metadata::for($read['model']);
+            $property = array_search($read['column'], $meta->columns, true);
+            if (!\is_string($property)) {
+                continue;
+            }
+            $exposed = $exposedBy[$read['model']] ??= self::declaredFor($read['model']);
+            if (isset($exposed[$property]) || $property === $meta->idProperty) {
+                $declared[$read['value']] = true;
+            } elseif (\strlen($read['value']) >= self::MIN_LENGTH) {
+                $undeclared[] = ['model' => $read['model'], 'column' => $read['column'], 'value' => $read['value']];
+            }
+        }
+
         return array_values(array_filter(
             $undeclared,
             static fn (array $leak): bool => !isset($declared[$leak['value']]),

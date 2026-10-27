@@ -117,3 +117,35 @@ it('empties the record at the reset, and records nothing once turned off', funct
         ->and($recorded)->toBe(1)
         ->and($orm->readsRecorded())->toBe([]);
 });
+
+// pluck() and an aggregate make no model, so the record of reads never saw
+// the column: `pluck('passwordHash')` copied into a Data field passed.
+it('looks for a column read through the query builder without a model', function (string $how) {
+    [$orm] = accounts();
+
+    $values = $orm->actAs('acme', static function () use ($orm, $how): array {
+        $read = match ($how) {
+            'pluck' => $orm->query(Account::class)->pluck('passwordHash'),
+            'max' => [$orm->query(Account::class)->max('passwordHash')],
+            default => [$orm->query(Account::class)->min('passwordHash')],
+        };
+        expect($read)->toBe([HASH]);
+
+        return lookedFor($orm);
+    });
+
+    expect($values)->toBe([HASH]);
+})->with(['pluck', 'max', 'min']);
+
+it('records no column read once recording is off, nor past the reset', function () {
+    [$orm] = accounts();
+
+    $orm->actAs('acme', static fn (): array => $orm->query(Account::class)->pluck('passwordHash'));
+    $orm->flush();
+    $afterReset = $orm->columnReadsRecorded();
+    $orm->recordReads(false);
+    $orm->actAs('acme', static fn (): array => $orm->query(Account::class)->pluck('passwordHash'));
+
+    expect($afterReset)->toBe([])
+        ->and($orm->columnReadsRecorded())->toBe([]);
+});
