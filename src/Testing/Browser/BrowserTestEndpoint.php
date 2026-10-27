@@ -35,6 +35,13 @@ final class BrowserTestEndpoint
     /** A test's call is small; anything near this is not one. */
     public const int MAX_BODY = 65_536;
 
+    /**
+     * A user's id as the run records it: printable, no space, one line --
+     * the run's list of users is a line each, and an id that could hold a
+     * line break could add a second.
+     */
+    private const string ID = '/^[\x21-\x7e]{1,200}\z/';
+
     public function __construct(
         private readonly BrowserTestable $app,
         private readonly BrowserTestRun $run,
@@ -83,6 +90,12 @@ final class BrowserTestEndpoint
             };
         } catch (\InvalidArgumentException $e) {
             return self::json(422, ['error' => $e->getMessage()]);
+        } catch (\Throwable $e) {
+            // A helper that failed is a failed request, not a worker that
+            // stops: the cause to the log, its class to the test.
+            error_log('[tinvar] the browser test endpoint failed: ' . $e::class . ': ' . $e->getMessage());
+
+            return self::json(500, ['error' => 'The helper failed: ' . $e::class . '. The server\'s log says why.']);
         }
     }
 
@@ -101,7 +114,8 @@ final class BrowserTestEndpoint
 
         $made = $this->app->seed($scenario, $input);
         $users = $made['users'] ?? null;
-        if (!\is_array($users) || !array_is_list($users) || array_filter($users, static fn (mixed $id): bool => !\is_string($id) || $id === '') !== []) {
+        if (!\is_array($users) || !array_is_list($users)
+            || array_filter($users, static fn (mixed $id): bool => !\is_string($id) || preg_match(self::ID, $id) !== 1) !== []) {
             throw new \LogicException("Scenario '{$scenario}' did not say which users it made, as a list of ids.");
         }
         /** @var list<string> $users */
@@ -114,7 +128,7 @@ final class BrowserTestEndpoint
     private function signIn(array $body, Request $request): Response
     {
         $id = $body['user'] ?? null;
-        if (!\is_string($id) || $id === '') {
+        if (!\is_string($id) || preg_match(self::ID, $id) !== 1) {
             throw new \InvalidArgumentException('`user` is the id of a user a scenario of this run seeded.');
         }
         // Only a user this run seeded: the endpoint signs in no one else,

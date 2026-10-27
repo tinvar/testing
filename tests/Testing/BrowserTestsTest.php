@@ -73,6 +73,12 @@ final class Recorder implements BrowserTestable
 
     public function seed(string $scenario, array $input): array
     {
+        if ($scenario === 'two-lines') {
+            return ['users' => ["user-9\nstaff-1"]];
+        }
+        if ($scenario === 'broken') {
+            throw new \RuntimeException('SQLSTATE[HY000]: no such table: customers');
+        }
         if ($scenario !== 'customer') {
             throw new \InvalidArgumentException("No scenario '{$scenario}'.");
         }
@@ -318,6 +324,44 @@ it('signs in only a user a scenario of this run seeded', function () {
 
         expect($response->status)->toBe(403)
             ->and($app->signedIn)->toBe([]);
+    });
+});
+
+// The run keeps its users a line each: an id that could hold a line break
+// could add someone the scenario never made.
+it('records only ids of one printable line', function () {
+    served(function (BrowserTests $tests, Recorder $app, string $token): void {
+        $log = (string) tempnam(sys_get_temp_dir(), 'tinvar-endpoint-log-');
+        $before = ini_set('error_log', $log);
+        try {
+            $seeded = call($tests, '/_test/seed', $token, ['scenario' => 'two-lines']);
+        } finally {
+            ini_set('error_log', (string) $before);
+            unlink($log);
+        }
+
+        expect($seeded->status)->toBe(500)
+            ->and(call($tests, '/_test/sign-in', $token, ['user' => 'staff-1'])->status)->toBe(403)
+            ->and(call($tests, '/_test/sign-in', $token, ['user' => "user-9\nstaff-1"])->status)->toBe(422)
+            ->and($app->signedIn)->toBe([]);
+    });
+});
+
+it('answers a helper that failed with its class, and the cause to the log alone', function () {
+    served(function (BrowserTests $tests, Recorder $app, string $token): void {
+        $log = (string) tempnam(sys_get_temp_dir(), 'tinvar-endpoint-log-');
+        $before = ini_set('error_log', $log);
+        try {
+            $response = call($tests, '/_test/seed', $token, ['scenario' => 'broken']);
+        } finally {
+            ini_set('error_log', (string) $before);
+        }
+
+        expect($response->status)->toBe(500)
+            ->and($response->body())->toContain('RuntimeException')
+            ->and($response->body())->not->toContain('SQLSTATE')
+            ->and((string) file_get_contents($log))->toContain('SQLSTATE');
+        unlink($log);
     });
 });
 
