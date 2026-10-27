@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Testing\Browser;
 
 use Tinvar\Http\Application;
+use Tinvar\Http\BrowserTestable;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Http\Terminable;

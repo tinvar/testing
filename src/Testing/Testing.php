@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Testing;
 
+use Tinvar\Http\TestableApplication;
 use Tinvar\Orm\LazyLoads;
 use Tinvar\Testing\Fakes\BodyFakes;
 

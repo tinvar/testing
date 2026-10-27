@@ -15,6 +15,7 @@ use Tinvar\Http\Kernel;
 use Tinvar\Http\Middleware\VerifyCsrfToken;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
+use Tinvar\Http\TestableApplication;
 use Tinvar\Orm\Model;
 use Tinvar\Query\QueryRunner;
 use Tinvar\Render\RendererException;

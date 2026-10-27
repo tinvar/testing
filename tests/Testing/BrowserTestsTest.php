@@ -10,11 +10,11 @@ declare(strict_types=1);
 namespace Tinvar\Tests\Testing\BrowserTests;
 
 use Tinvar\Auth\Authenticatable;
+use Tinvar\Http\BrowserTestable;
 use Tinvar\Http\Kernel;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Routing\LoadedRoute;
-use Tinvar\Testing\Browser\BrowserTestable;
 use Tinvar\Testing\Browser\BrowserTestRun;
 use Tinvar\Testing\Browser\BrowserTests;
 
