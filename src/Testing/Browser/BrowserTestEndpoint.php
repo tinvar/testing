@@ -150,7 +150,10 @@ final class BrowserTestEndpoint
             $this->run->moveClock($at - time());
         }
 
+        // This process's too, at once; every other reads the run's record
+        // as its next request starts.
         $offset = $this->run->offset();
+        $this->app->moveClock($offset);
 
         return self::json(200, ['offset' => $offset, 'now' => time() + $offset]);
     }
@@ -158,6 +161,7 @@ final class BrowserTestEndpoint
     private function reset(): Response
     {
         $this->run->reset();
+        $this->app->moveClock(0);
 
         return self::json(200, ['offset' => 0, 'now' => time()]);
     }

@@ -378,7 +378,9 @@ it('moves the clock for every request after, and puts it back', function () {
         expect(BrowserTestRun::open($directory)->offset())->toBe(3660);
 
         $tests->handle(Request::get('/orders', ['host' => '127.0.0.1']));
-        expect($app->clock)->toBe([0, 3600, 3660]);
+        // Each call moves this process's clock as it answers, and each
+        // request reads the run's record as it starts.
+        expect($app->clock)->toBe([0, 3600, 3600, 3660, 3660]);
 
         $at = call($tests, '/_test/clock', $token, ['at' => time() - 86_400]);
         expect(decoded($at)['offset'])->toBeLessThanOrEqual(-86_400)->toBeGreaterThan(-86_405);
