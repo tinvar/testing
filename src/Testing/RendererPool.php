@@ -69,6 +69,9 @@ final class RendererPool
     /** The run's pid, which a shared pool stops after. */
     private readonly int $runPid;
 
+    /** The supervisor pid /proc or ps last said is this pool's. */
+    private ?int $confirmed = null;
+
     /**
      * @param string $entry the application's built rsc entry
      * @param string $projectRoot where node_modules and the renderer package are
@@ -174,6 +177,7 @@ final class RendererPool
                 posix_kill($pid, SIGTERM);
             }
             @unlink("{$this->path}/supervisor.pid");
+            $this->confirmed = null;
 
             return;
         }
@@ -282,22 +286,86 @@ final class RendererPool
         if (preg_match('/^[1-9][0-9]{0,9}\z/', $pid) !== 1) {
             throw new \RuntimeException('Could not start the renderer pool: the shell named no process.');
         }
+        $this->confirmed = null;
         file_put_contents("{$this->path}/supervisor.pid", $pid, LOCK_EX);
     }
 
-    /** Whether what this process started is still running. */
+    /**
+     * Whether what this process started is still running. The pid is the
+     * one this process just started, so it is asked after as it is: it may
+     * not have become the renderer yet.
+     */
     private function alive(): bool
     {
         if ($this->run === null) {
             return \is_resource($this->process) && proc_get_status($this->process)['running'];
         }
-        $pid = $this->supervisor();
+        $pid = $this->recorded();
 
         return $pid !== null && posix_kill($pid, 0);
     }
 
-    /** The pid a run's pool was started as, or null. */
+    /**
+     * The pid a run's pool runs as, or null: the one its record names, once
+     * something says that process is the renderer on this pool's directory.
+     *
+     * A record outlives its process, and the pid may be any of this user's
+     * processes by then -- signalled as the pool, or taken for one running.
+     * So /proc says what it runs, or `ps` where there is none (macOS), and
+     * a pid neither can vouch for is no pool's.
+     */
     private function supervisor(): ?int
+    {
+        $pid = $this->recorded();
+        if ($pid === null) {
+            return null;
+        }
+        if ($this->confirmed === $pid) {
+            return $pid;
+        }
+
+        $args = self::argumentsOf($pid);
+        $ours = $args !== null
+            && \in_array($this->path, $args, true)
+            && array_filter($args, static fn (string $arg): bool => str_ends_with($arg, '/renderer.js')) !== [];
+        if (!$ours) {
+            return null;
+        }
+        $this->confirmed = $pid;
+
+        return $pid;
+    }
+
+    /**
+     * What $pid was started with, word by word, or null where nothing says.
+     * From `ps`, words are split at spaces, so a path holding one is not
+     * matched -- the side to fail on.
+     *
+     * @return list<string>|null
+     */
+    private static function argumentsOf(int $pid): ?array
+    {
+        if (is_dir('/proc')) {
+            $cmdline = is_readable("/proc/{$pid}/cmdline") ? @file_get_contents("/proc/{$pid}/cmdline") : false;
+
+            return $cmdline === false || $cmdline === '' ? null : explode("\0", rtrim($cmdline, "\0"));
+        }
+
+        $process = @proc_open(['ps', '-o', 'args=', '-p', (string) $pid], [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', '/dev/null', 'w']], $pipes);
+        if (!\is_resource($process)) {
+            return null;
+        }
+        $args = stream_get_contents($pipes[1]);
+        fclose($pipes[1]);
+        if (proc_close($process) !== 0 || !\is_string($args) || trim($args) === '') {
+            return null;
+        }
+
+        return preg_split('/\s+/', trim($args)) ?: null;
+    }
+
+    /** The pid a run's pool's record names, whoever it is now, or null. */
+    private function recorded(): ?int
     {
         $file = "{$this->path}/supervisor.pid";
         clearstatcache(true, $file);
