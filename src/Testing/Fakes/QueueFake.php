@@ -11,6 +11,9 @@ use Tinvar\Jobs\Payload;
 use Tinvar\Orm\Connection;
 use Tinvar\Orm\Orm;
 use Tinvar\Queue\ArrayQueue;
+use Tinvar\Queue\BatchRecord;
+use Tinvar\Queue\BatchStep;
+use Tinvar\Queue\Coordination;
 use Tinvar\Queue\PendingJob;
 use Tinvar\Queue\Queue;
 use Tinvar\Queue\ReservedJob;
@@ -29,9 +32,12 @@ use Tinvar\Testing\Testing;
  * by the job's class.
  *
  * Everything else is an ArrayQueue's, so reservations, retries and failures
- * behave as a real queue's.
+ * behave as a real queue's -- and unique jobs' locks, rate-limited queues'
+ * windows and batches (Coordination) as a real queue keeps them: a unique
+ * job dispatched twice is pushed once, and a Worker run over the fake
+ * pushes a chain's next job and a batch's callbacks here, to be asserted.
  */
-final class QueueFake implements Queue
+final class QueueFake implements Queue, Coordination
 {
     private readonly ArrayQueue $queue;
 
@@ -175,6 +181,56 @@ final class QueueFake implements Queue
     public function retry(string $id, int $now): bool
     {
         return $this->queue->retry($id, $now);
+    }
+
+    public function lock(string $key, string $job, int $until, int $now): ?string
+    {
+        return $this->queue->lock($key, $job, $until, $now);
+    }
+
+    public function unlock(string $key, string $job): bool
+    {
+        return $this->queue->unlock($key, $job);
+    }
+
+    public function slot(string $queue, int $runs, int $per, int $now): bool
+    {
+        return $this->queue->slot($queue, $runs, $per, $now);
+    }
+
+    public function unslot(string $queue, int $per, int $now): void
+    {
+        $this->queue->unslot($queue, $per, $now);
+    }
+
+    public function addBatch(BatchRecord $batch): void
+    {
+        $this->queue->addBatch($batch);
+    }
+
+    public function batch(string $id): ?BatchRecord
+    {
+        return $this->queue->batch($id);
+    }
+
+    public function batchJobDone(string $id, string $job, int $now): ?BatchStep
+    {
+        return $this->queue->batchJobDone($id, $job, $now);
+    }
+
+    public function batchJobFailed(string $id, string $job, int $now): ?BatchStep
+    {
+        return $this->queue->batchJobFailed($id, $job, $now);
+    }
+
+    public function prune(int $now, int $finishedBefore): int
+    {
+        return $this->queue->prune($now, $finishedBefore);
+    }
+
+    public function atomically(\Closure $work): mixed
+    {
+        return $this->queue->atomically($work);
     }
 
     private function summary(): string
