@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Testing\Fakes;
 
 use PHPUnit\Framework\Assert;
+use Tinvar\Mail\LinkPolicy;
 use Tinvar\Mail\Message;
 use Tinvar\Mail\MailRenderer;
 use Tinvar\Mail\RenderedMail;
@@ -33,11 +34,11 @@ final class MailFake implements Transport, MailRenderer
 
     public function __construct(private readonly ?MailRenderer $renderer = null) {}
 
-    public function render(string $template, array $props): RenderedMail
+    public function render(string $template, array $props, ?LinkPolicy $links = null): RenderedMail
     {
         $this->drawn[] = ['template' => $template, 'props' => $props];
 
-        return $this->renderer?->render($template, $props) ?? new RenderedMail(
+        return $this->renderer?->render($template, $props, $links) ?? new RenderedMail(
             "<p>{$template}</p>",
             $template,
         );
