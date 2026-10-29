@@ -192,8 +192,15 @@ final readonly class Client
         $from = $loads?->count() ?? 0;
 
         $response = $this->app->handleWith($request, $respond);
+        $page = new PageResponse($this, $url, $request, $response, $recorded, $response->status >= 500 ? $this->app->lastFailure() : null, $loads?->since($from));
 
-        return new PageResponse($this, $url, $request, $response, $recorded, $response->status >= 500 ? $this->app->lastFailure() : null, $loads?->since($from));
+        // The test's #[QueryBudget], on every page it asked for.
+        $budget = QueryBudget::current();
+        if ($budget !== null && $recorded !== []) {
+            $page->assertQueryBudget($budget);
+        }
+
+        return $page;
     }
 
     /**
@@ -328,6 +335,10 @@ final readonly class Client
         }
 
         $page = new RenderedPage($url, $response, $result, $body, $statements, $snapshot ?? [], $loads?->since($from));
+        $budget = QueryBudget::current();
+        if ($budget !== null) {
+            $page->assertQueryBudget($budget);
+        }
 
         // "assertNoModelLeak() runs on every rendered page test by default."
         return $this->leakCheck ? $page->assertNoModelLeak() : $page;
