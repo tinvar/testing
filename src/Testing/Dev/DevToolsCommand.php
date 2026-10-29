@@ -199,16 +199,44 @@ final class DevToolsCommand
             $pool->start();
             $snapshot = DatabaseSnapshot::ofSqlite($this->database);
             try {
-                $app = ($this->application)($pool->path, $snapshot->path, self::key(), $build);
-                try {
-                    return new RenderDump($app)->dump($path, $scenario);
-                } finally {
-                    $app->kernel()->scope->reset();
-                }
+                return self::underTheTestProfile(function () use ($pool, $snapshot, $build, $path, $scenario): array {
+                    $app = ($this->application)($pool->path, $snapshot->path, self::key(), $build);
+                    try {
+                        return new RenderDump($app)->dump($path, $scenario);
+                    } finally {
+                        $app->kernel()->scope->reset();
+                    }
+                });
             } finally {
                 $snapshot->remove();
             }
         };
+    }
+
+    /**
+     * $render, run as the test profile's server runs: the build it renders
+     * was made for the test profile, so the process serving it says test
+     * too -- the two halves of a profile agreeing, as ADR 0066 has them --
+     * and what the application refuses outside it, a scenario's users
+     * above all (ADR 0090), it allows here and nowhere else. Held to
+     * BuildProfile's own refusals again before anything runs (dev mode, a
+     * production marker, TINVAR_ENV), and put back after.
+     *
+     * @template T
+     * @param \Closure(): T $render
+     * @return T
+     */
+    private static function underTheTestProfile(\Closure $render): mixed
+    {
+        $before = getenv(BuildProfile::ENV);
+        putenv(BuildProfile::ENV . '=' . BuildProfile::TEST);
+        try {
+            BuildProfile::fromEnvironment();
+
+            return $render();
+        } finally {
+            putenv($before === false ? BuildProfile::ENV : BuildProfile::ENV . '=' . $before);
+        }
     }
 
     /** The build directory: --build, TINVAR_BUILD_DIR, or dist-test/ in the application. */

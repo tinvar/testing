@@ -131,6 +131,8 @@ it('renders only through a build made for the test profile', function () {
         ->toThrow(\RuntimeException::class, 'was made for production')
         ->and(static fn () => DevTools::assertTestBuild('render --dump', build('production')))
         ->toThrow(\RuntimeException::class, 'was made for production')
+        ->and(static fn () => DevTools::assertTestBuild('render --dump', build('staging')))
+        ->toThrow(\RuntimeException::class, 'was made for staging')
         ->and(static fn () => DevTools::assertTestBuild('render --dump', build('test', entry: false)))
         ->toThrow(\RuntimeException::class, 'not all there');
 });
