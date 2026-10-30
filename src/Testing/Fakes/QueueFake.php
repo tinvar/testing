@@ -14,6 +14,7 @@ use Tinvar\Queue\ArrayQueue;
 use Tinvar\Queue\BatchRecord;
 use Tinvar\Queue\BatchStep;
 use Tinvar\Queue\Coordination;
+use Tinvar\Queue\Wakes;
 use Tinvar\Queue\PendingJob;
 use Tinvar\Queue\Queue;
 use Tinvar\Queue\ReservedJob;
@@ -37,7 +38,7 @@ use Tinvar\Testing\Testing;
  * job dispatched twice is pushed once, and a Worker run over the fake
  * pushes a chain's next job and a batch's callbacks here, to be asserted.
  */
-final class QueueFake implements Queue, Coordination
+final class QueueFake implements Queue, Coordination, Wakes
 {
     private readonly ArrayQueue $queue;
 
@@ -181,6 +182,11 @@ final class QueueFake implements Queue, Coordination
     public function retry(string $id, int $now): bool
     {
         return $this->queue->retry($id, $now);
+    }
+
+    public function wake(string $id, int $now): bool
+    {
+        return $this->queue->wake($id, $now);
     }
 
     public function lock(string $key, string $job, int $until, int $now): ?string
