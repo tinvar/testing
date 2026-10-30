@@ -78,15 +78,8 @@ final class ModelLeaks
 
             foreach ($meta->columns as $property => $column) {
                 $value = $values[$column] ?? null;
-                if (!\is_string($value)) {
-                    continue;
-                }
-                if (isset($exposed[$property]) || $property === $meta->idProperty) {
-                    $declared[$value] = true;
-                    continue;
-                }
-                if (\strlen($value) >= self::MIN_LENGTH) {
-                    $undeclared[] = ['model' => $model::class, 'column' => $column, 'value' => $value];
+                if (\is_string($value)) {
+                    self::sort($model::class, $column, $property, $value, $exposed, $property === $meta->idProperty, $declared, $undeclared);
                 }
             }
         }
@@ -100,17 +93,97 @@ final class ModelLeaks
                 continue;
             }
             $exposed = $exposedBy[$read['model']] ??= self::declaredFor($read['model']);
-            if (isset($exposed[$property]) || $property === $meta->idProperty) {
-                $declared[$read['value']] = true;
-            } elseif (\strlen($read['value']) >= self::MIN_LENGTH) {
-                $undeclared[] = ['model' => $read['model'], 'column' => $read['column'], 'value' => $read['value']];
-            }
+            self::sort($read['model'], $read['column'], $property, $read['value'], $exposed, $property === $meta->idProperty, $declared, $undeclared);
         }
 
         return array_values(array_filter(
             $undeclared,
             static fn (array $leak): bool => !isset($declared[$leak['value']]),
         ));
+    }
+
+    /**
+     * One column's value, declared or not -- and, for a value-object or
+     * array column stored as JSON, each string inside it by its path, held
+     * to its own declaration (ADR 0122). A Data field showing the property
+     * whole declares all of it; a #[From('address.city')] declares that
+     * field and what is below it, and leaves `address.street` undeclared.
+     * The stored JSON whole is looked for too, as any column's value is.
+     *
+     * @param class-string $model
+     * @param array<string, true> $exposed
+     * @param array<string, true> $declared
+     * @param list<array{model: class-string, column: string, value: string}> $undeclared
+     */
+    private static function sort(string $model, string $column, string $property, string $value, array $exposed, bool $key, array &$declared, array &$undeclared): void
+    {
+        $whole = $key || isset($exposed[$property]);
+        if ($whole) {
+            $declared[$value] = true;
+        } elseif (\strlen($value) >= self::MIN_LENGTH) {
+            $undeclared[] = ['model' => $model, 'column' => $column, 'value' => $value];
+        }
+
+        foreach (self::leaves($value) as $path => $leaf) {
+            if ($whole || self::declaresPath($exposed, "{$property}.{$path}")) {
+                $declared[$leaf] = true;
+            } elseif (\strlen($leaf) >= self::MIN_LENGTH) {
+                $undeclared[] = ['model' => $model, 'column' => "{$column}.{$path}", 'value' => $leaf];
+            }
+        }
+    }
+
+    /**
+     * The strings inside a value stored as a JSON object or list, by their
+     * dotted path; none for any other value. Followed as deep as json_decode
+     * reads by default, and no deeper.
+     *
+     * @return array<string, string>
+     */
+    private static function leaves(string $value): array
+    {
+        $trimmed = ltrim($value);
+        if ($trimmed === '' || ($trimmed[0] !== '{' && $trimmed[0] !== '[')) {
+            return [];
+        }
+        $decoded = json_decode($value, true);
+        if (!\is_array($decoded)) {
+            return [];
+        }
+
+        $leaves = [];
+        $walk = static function (array $node, string $at) use (&$walk, &$leaves): void {
+            foreach ($node as $key => $item) {
+                $path = $at === '' ? (string) $key : "{$at}.{$key}";
+                if (\is_array($item)) {
+                    $walk($item, $path);
+                } elseif (\is_string($item)) {
+                    $leaves[$path] = $item;
+                }
+            }
+        };
+        $walk($decoded, '');
+
+        return $leaves;
+    }
+
+    /**
+     * Whether a #[From] path declares $path: the path itself, or a field
+     * above it.
+     *
+     * @param array<string, true> $exposed
+     */
+    private static function declaresPath(array $exposed, string $path): bool
+    {
+        $parts = explode('.', $path);
+        while ($parts !== []) {
+            if (isset($exposed[implode('.', $parts)])) {
+                return true;
+            }
+            array_pop($parts);
+        }
+
+        return false;
     }
 
     /**
@@ -185,7 +258,12 @@ final class ModelLeaks
                 $from = $parameter->getAttributes(From::class)[0] ?? null;
             }
             if ($from !== null) {
-                $fields[explode('.', $from->newInstance()->property)[0]] = true;
+                // The whole path: a property, or a field inside a
+                // value-object column, which declares that field and
+                // what is below it, not the rest of the column. A path
+                // through a relation names another model's column, which
+                // is declared, or not, by that model's own fields.
+                $fields[$from->newInstance()->property] = true;
             }
         }
 
