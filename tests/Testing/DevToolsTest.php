@@ -18,6 +18,7 @@ use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Http\TestableApplication;
 use Tinvar\Routing\LoadedRoute;
+use Tinvar\Config\Secret;
 use Tinvar\Testing\Dev\DatabaseSnapshot;
 use Tinvar\Testing\Dev\DevTools;
 use Tinvar\Testing\Dev\LogTail;
@@ -366,7 +367,7 @@ describe('a copy on a server', function () {
         $path = getenv('PATH');
         putenv('PATH=/nonexistent');
         try {
-            expect(static fn () => DatabaseSnapshot::of($dsn))->toThrow(\RuntimeException::class, "needs {$tool} on the PATH");
+            expect(static fn () => DatabaseSnapshot::of($dsn, new Secret('mysql:host=127.0.0.1;user=tinvar_dump')))->toThrow(\RuntimeException::class, "needs {$tool} on the PATH");
         } finally {
             putenv('PATH=' . $path);
         }
@@ -394,6 +395,28 @@ describe('a copy on a server', function () {
             rmdir($directory);
         }
     });
+
+    it('refuses to copy MySQL without a user of its own that reaches the copies alone', function () {
+        expect(static fn () => DatabaseSnapshot::of('mysql:host=127.0.0.1;dbname=shop;user=shop'))->toThrow(\RuntimeException::class, 'TINVAR_DUMP_MYSQL_DSN')
+            ->and(static fn () => DatabaseSnapshot::of('mysql:host=127.0.0.1;dbname=shop;user=shop', new Secret('pgsql:host=127.0.0.1;user=x')))->toThrow(\RuntimeException::class, 'not a mysql: DSN');
+    });
+
+    it('takes a MySQL user whose grants reach the copies\' databases alone, and refuses every other', function (array $grants, ?string $why) {
+        expect(ServerCopy::grantsConfined($grants))->toBe($why);
+    })->with([
+        'the copies alone' => [["GRANT USAGE ON *.* TO `tinvar_dump`@`%`", 'GRANT ALL PRIVILEGES ON `tinvar\_dump\_%`.* TO `tinvar_dump`@`%`'], null],
+        'listed privileges' => [["GRANT USAGE ON *.* TO `d`@`%` IDENTIFIED BY PASSWORD '*AB'", 'GRANT SELECT, INSERT, CREATE, DROP, CREATE ROUTINE ON `tinvar\_dump\_%`.* TO `d`@`%`'], null],
+        'nothing on the copies' => [['GRANT USAGE ON *.* TO `d`@`%`'], "it holds no grant on the copies' databases (`tinvar\\_dump\\_%`)"],
+        'a privilege everywhere' => [['GRANT SELECT ON *.* TO `d`@`%`', 'GRANT ALL PRIVILEGES ON `tinvar\_dump\_%`.* TO `d`@`%`'], "it holds a grant beyond the copies' databases (`tinvar\\_dump\\_%`)"],
+        'the live database' => [['GRANT ALL PRIVILEGES ON `tinvar\_dump\_%`.* TO `d`@`%`', 'GRANT ALL PRIVILEGES ON `shop`.* TO `d`@`%`'], "it holds a grant beyond the copies' databases (`tinvar\\_dump\\_%`)"],
+        'unescaped underscores' => [['GRANT ALL PRIVILEGES ON `tinvar_dump_%`.* TO `d`@`%`'], "it holds a grant beyond the copies' databases (`tinvar\\_dump\\_%`)"],
+        'a table elsewhere' => [['GRANT ALL PRIVILEGES ON `tinvar\_dump\_%`.* TO `d`@`%`', 'GRANT SELECT ON `shop`.`orders` TO `d`@`%`'], "it holds a grant beyond the copies' databases (`tinvar\\_dump\\_%`)"],
+        'a role' => [['GRANT ALL PRIVILEGES ON `tinvar\_dump\_%`.* TO `d`@`%`', 'GRANT `admin`@`%` TO `d`@`%`'], "it holds a grant beyond the copies' databases (`tinvar\\_dump\\_%`)"],
+        'an active role' => [['GRANT ALL PRIVILEGES ON `tinvar\_dump\_%`.* TO `d`@`%`', 'ROLE `admin`@`%`'], "it holds a grant beyond the copies' databases (`tinvar\\_dump\\_%`)"],
+        'a proxy' => [['GRANT ALL PRIVILEGES ON `tinvar\_dump\_%`.* TO `d`@`%`', "GRANT PROXY ON ''@'' TO `d`@`%`"], "it holds a grant beyond the copies' databases (`tinvar\\_dump\\_%`)"],
+        'a partial revoke' => [['GRANT ALL PRIVILEGES ON `tinvar\_dump\_%`.* TO `d`@`%`', 'REVOKE INSERT ON `mysql`.* FROM `d`@`%`'], "it holds a grant beyond the copies' databases (`tinvar\\_dump\\_%`)"],
+        'grant option' => [['GRANT ALL PRIVILEGES ON `tinvar\_dump\_%`.* TO `d`@`%` WITH GRANT OPTION'], 'it may grant what it holds to others'],
+    ]);
 
     it('refuses a DSN it cannot read whole', function (string $dsn, string $why) {
         expect(static fn () => DatabaseSnapshot::of($dsn))->toThrow(\RuntimeException::class, $why);

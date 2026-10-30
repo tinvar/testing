@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Testing\Dev;
 
+use Tinvar\Config\Secret;
 use Tinvar\Support\PrivateDirectory;
 
 /**
@@ -46,9 +47,10 @@ final class DatabaseSnapshot
 
     /**
      * A private copy of the database $source names: an SQLite file's path,
-     * or a pgsql: or mysql: DSN.
+     * or a pgsql: or mysql: DSN. A MySQL copy is made as $mysqlCopy's user,
+     * one that reaches the copies alone (ServerCopy::make()).
      */
-    public static function of(string $source): self
+    public static function of(string $source, #[\SensitiveParameter] ?Secret $mysqlCopy = null): self
     {
         if (!ServerCopy::copies($source)) {
             return self::ofSqlite($source);
@@ -57,14 +59,14 @@ final class DatabaseSnapshot
         PrivateDirectory::removeAbandoned(self::PREFIX);
         $directory = PrivateDirectory::create(self::PREFIX, owner: getmypid() ?: null);
         try {
-            $copy = ServerCopy::make($source, $directory);
+            $copy = ServerCopy::make($source, $directory, $mysqlCopy);
         } catch (\Throwable $e) {
             PrivateDirectory::remove($directory);
 
             throw $e;
         }
         // The dump and the credentials the tools read are not kept.
-        foreach (['dump', 'pgpass', 'my.cnf'] as $file) {
+        foreach (['dump', 'pgpass', 'my.cnf', 'my-copy.cnf'] as $file) {
             if (is_file("{$directory}/{$file}")) {
                 unlink("{$directory}/{$file}");
             }

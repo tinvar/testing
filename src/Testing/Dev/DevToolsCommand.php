@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Testing\Dev;
 
+use Tinvar\Config\Configs;
+use Tinvar\Config\FrameworkConfig;
 use Tinvar\Http\TestableApplication;
 use Tinvar\Orm\Model;
 use Tinvar\Support\BuildProfile;
@@ -166,7 +168,7 @@ final class DevToolsCommand
             // The declarations, from an application on a copy of its own --
             // building one opens the database -- on a socket directory
             // nothing listens in: nothing it is asked renders.
-            $snapshot = DatabaseSnapshot::of($this->database);
+            $snapshot = $this->snapshot();
             $silent = PrivateDirectory::create('tinvar-mcp', owner: getmypid() ?: null);
             register_shutdown_function(static fn () => PrivateDirectory::remove($silent));
             $kernel = ($this->application)($silent, $snapshot->database, self::key(), null)->kernel();
@@ -187,6 +189,19 @@ final class DevToolsCommand
     }
 
     /**
+     * A fresh copy of the database: on MySQL, made as the copies' own user
+     * TINVAR_DUMP_MYSQL_DSN names (ServerCopy::make()), refused without one.
+     */
+    private function snapshot(): DatabaseSnapshot
+    {
+        $mysqlCopy = str_starts_with($this->database, 'mysql:')
+            ? Configs::load(FrameworkConfig::class, $this->env)->dumpMysqlDsn
+            : null;
+
+        return DatabaseSnapshot::of($this->database, $mysqlCopy);
+    }
+
+    /**
      * Renders a path, each time on a fresh copy of the database and with a
      * key of its own, through the pool for $build.
      *
@@ -199,7 +214,7 @@ final class DevToolsCommand
         return function (string $path, ?string $scenario) use ($pool, $build): array {
             RenderDump::assertPagePath($path);
             $pool->start();
-            $snapshot = DatabaseSnapshot::of($this->database);
+            $snapshot = $this->snapshot();
             try {
                 return self::underTheTestProfile(function () use ($pool, $snapshot, $build, $path, $scenario): array {
                     $app = ($this->application)($pool->path, $snapshot->database, self::key(), $build);

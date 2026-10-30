@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Testing\Dev;
 
+use Tinvar\Config\Secret;
+
 /**
  * A copy of a Postgres or MySQL database in a database of its own on the
  * same server, made by the server's own dump and restore tools: what
@@ -20,6 +22,10 @@ namespace Tinvar\Testing\Dev;
  *   - the copy is restored into a database this class created, with a name
  *     it made up, and the restore is held to that one database
  *     (`pg_restore --dbname`, `mysql --one-database`);
+ *   - on MySQL, which names any database in a statement, the copy is made,
+ *     restored and handed over under a user of its own
+ *     (TINVAR_DUMP_MYSQL_DSN) whose grants reach the copies alone, read
+ *     with SHOW GRANTS before anything is made;
  *   - what the application is handed is the copy's DSN, checked to name
  *     the copy before it is handed over -- the server asked which database
  *     the connection is in -- and nothing else;
@@ -28,7 +34,8 @@ namespace Tinvar\Testing\Dev;
  *
  * What it cannot do it refuses, before anything is created: no dump or
  * restore tool on the PATH, a DSN it cannot read, a user the server will
- * not let create a database. A copy is never made by hand, statement by
+ * not let create a database, and on MySQL no copies' user, or one that
+ * could reach any other database. A copy is never made by hand, statement by
  * statement, where a table it did not know of could be left behind.
  *
  * The password goes to the tools in a file only this user may read, in the
@@ -43,22 +50,51 @@ final class ServerCopy
     /** A copy's name: the prefix, this host, the process that made it, and a random part. */
     private const string NAME = '/^tinvar_dump_[0-9a-f]{8}_[1-9][0-9]{0,9}_[0-9a-f]{8}\z/';
 
-    /** @param array<string, string> $dsn the source's DSN, read */
+    /** Where a MySQL copy's own user is named: a DSN whose user reaches the copies alone. */
+    public const string MYSQL_COPY_ENV = 'TINVAR_DUMP_MYSQL_DSN';
+
+    /**
+     * @param array<string, string> $dsn where the copy is made, read: the source's server
+     *        and credentials on Postgres, the copies' own user's on MySQL
+     * @param array<string, string> $source the source's DSN, read: what is dumped
+     */
     private function __construct(
         public readonly string $driver,
         public readonly string $name,
         private readonly array $dsn,
+        private readonly array $source,
     ) {}
 
     /**
      * Copies the database $source names into a new one beside it, its dump
      * written in $directory, a private directory of this process's own.
      *
+     * On MySQL the copy is made, restored and handed over under a user of
+     * its own, $mysqlCopy (TINVAR_DUMP_MYSQL_DSN), whose grants reach the
+     * copies' databases and nothing else: MySQL names any database in a
+     * statement (`live.orders`), so a render, a trigger or a routine
+     * handed the source's own user on the copy could still write the live
+     * data. SHOW GRANTS is read before anything is made, and a user that
+     * could reach any other database is refused. Postgres connects to one
+     * database at a time, and keeps the source's user.
+     *
      * @throws \RuntimeException when it cannot be copied as above
      */
-    public static function make(string $source, string $directory, ?\Closure $run = null): self
+    public static function make(string $source, string $directory, #[\SensitiveParameter] ?Secret $mysqlCopy = null, ?\Closure $run = null): self
     {
-        [$driver, $dsn] = self::read($source);
+        [$driver, $sourceDsn] = self::read($source);
+        $dsn = $sourceDsn;
+        if ($driver === 'mysql') {
+            if ($mysqlCopy === null) {
+                throw new \RuntimeException('Copying a mysql database needs a user of its own that reaches the copies alone, named in ' . self::MYSQL_COPY_ENV
+                    . ": GRANT ALL ON `tinvar\\_dump\\_%`.* and nothing else. Without one the copy would be handed the live database's user; nothing was copied.");
+            }
+            [$copyDriver, $dsn] = self::read($mysqlCopy->reveal(), database: false);
+            if ($copyDriver !== 'mysql') {
+                throw new \RuntimeException(self::MYSQL_COPY_ENV . ' is not a mysql: DSN; nothing was copied.');
+            }
+            unset($dsn['dbname']);
+        }
         $run ??= self::run(...);
         $tools = $driver === 'pgsql' ? ['pg_dump', 'pg_restore'] : ['mysqldump', 'mysql'];
         foreach ($tools as $tool) {
@@ -71,9 +107,17 @@ final class ServerCopy
         // sweep's DROPs of this host's abandoned copies -- and closed: no
         // connection to the live database stays open while anything renders.
         $admin = self::connect($driver, $dsn);
+        if ($driver === 'mysql') {
+            $why = self::grantsConfined(self::grants($admin));
+            if ($why !== null) {
+                unset($admin);
+
+                throw new \RuntimeException('The user ' . self::MYSQL_COPY_ENV . " names is not one that reaches the copies alone: {$why}. Nothing was copied.");
+            }
+        }
         self::dropAbandoned($driver, $admin);
         $name = self::PREFIX . substr(hash('sha256', (string) gethostname()), 0, 8) . '_' . (getmypid() ?: 1) . '_' . bin2hex(random_bytes(4));
-        $copy = new self($driver, $name, $dsn);
+        $copy = new self($driver, $name, $dsn, $sourceDsn);
         try {
             $admin->exec($driver === 'pgsql' ? "CREATE DATABASE \"{$name}\" TEMPLATE template0" : "CREATE DATABASE `{$name}`");
         } catch (\PDOException $e) {
@@ -94,7 +138,7 @@ final class ServerCopy
         return $copy;
     }
 
-    /** The DSN the application is handed: the copy's, with the source's credentials and settings. */
+    /** The DSN the application is handed: the copy's, with the source's credentials on Postgres and the copies' user's on MySQL. */
     public function dsn(): string
     {
         $parts = [...$this->dsn, 'dbname' => $this->name];
@@ -119,6 +163,71 @@ final class ServerCopy
     }
 
     /**
+     * Why a MySQL user with $grants (SHOW GRANTS, one line each) could
+     * reach more than the copies' databases, or null when it cannot.
+     *
+     * Each line must be one of two: USAGE on `*.*`, which is no privilege,
+     * or a list of plain privileges on exactly `tinvar\_dump\_%` -- its
+     * underscores escaped, since an unescaped `_` matches any character.
+     * A role, a proxy, a grant on any other database, table or column, a
+     * privilege on `*.*`, a partial revoke and WITH GRANT OPTION are each
+     * refused, as is a user with no grant on the copies at all. What this
+     * cannot read is refused rather than guessed at.
+     *
+     * @internal
+     * @param list<string> $grants
+     */
+    public static function grantsConfined(array $grants): ?string
+    {
+        $copies = false;
+        foreach ($grants as $grant) {
+            if (str_contains($grant, 'WITH GRANT OPTION') || str_contains($grant, 'WITH ADMIN OPTION')) {
+                return 'it may grant what it holds to others';
+            }
+            if (preg_match('/^GRANT USAGE ON \*\.\* TO .+\z/s', $grant) === 1) {
+                continue;
+            }
+            if (preg_match('/^GRANT [A-Z][A-Z ,_]* ON `tinvar\\\\_dump\\\\_%`\.\* TO .+\z/s', $grant) === 1) {
+                $copies = true;
+
+                continue;
+            }
+
+            return 'it holds a grant beyond the copies\' databases (`tinvar\_dump\_%`)';
+        }
+
+        return $copies ? null : 'it holds no grant on the copies\' databases (`tinvar\_dump\_%`)';
+    }
+
+    /**
+     * The connected user's grants, and any role it has active as one more
+     * line, so that it is refused: a role's grants are not in SHOW GRANTS.
+     *
+     * @return list<string>
+     */
+    private static function grants(\PDO $admin): array
+    {
+        try {
+            $listed = $admin->query('SHOW GRANTS');
+            $grants = $listed === false ? [] : $listed->fetchAll(\PDO::FETCH_COLUMN);
+        } catch (\PDOException $e) {
+            throw new \RuntimeException('The server would not say what the copies\' user may do (SHOW GRANTS); nothing was copied.', previous: $e);
+        }
+        try {
+            $statement = $admin->query('SELECT CURRENT_ROLE()');
+            $role = $statement === false ? null : $statement->fetchColumn();
+        } catch (\PDOException) {
+            // A server with no roles: there is none to have.
+            $role = null;
+        }
+        if (\is_string($role) && $role !== '' && $role !== 'NONE') {
+            $grants[] = "ROLE {$role}";
+        }
+
+        return array_values(array_map(strval(...), $grants));
+    }
+
+    /**
      * Whether $source is a DSN this class copies: a Postgres or MySQL one.
      */
     public static function copies(string $source): bool
@@ -129,9 +238,10 @@ final class ServerCopy
     /**
      * The driver and the DSN's parts.
      *
+     * @param bool $database whether it must name a dbname: the source's must, the copies' user's need not
      * @return array{'pgsql'|'mysql', array<string, string>}
      */
-    private static function read(string $source): array
+    private static function read(#[\SensitiveParameter] string $source, bool $database = true): array
     {
         $driver = str_starts_with($source, 'pgsql:') ? 'pgsql' : (str_starts_with($source, 'mysql:') ? 'mysql' : null);
         if ($driver === null) {
@@ -153,7 +263,7 @@ final class ServerCopy
             }
             $parts[$key] = trim(substr($pair, $at + 1));
         }
-        if (($parts['dbname'] ?? '') === '') {
+        if ($database && ($parts['dbname'] ?? '') === '') {
             throw new \RuntimeException("The {$driver} DSN names no dbname to copy.");
         }
         // A value the tools' own syntax would read as more than one value.
@@ -193,7 +303,7 @@ final class ServerCopy
     {
         $dump = "{$directory}/dump";
         $secrets = "{$directory}/" . ($this->driver === 'pgsql' ? 'pgpass' : 'my.cnf');
-        $this->writeSecrets($secrets);
+        $this->writeSecrets($secrets, $this->source);
         $base = ['PATH' => (string) getenv('PATH'), 'LANG' => 'C'];
 
         if ($this->driver === 'pgsql') {
@@ -206,9 +316,13 @@ final class ServerCopy
             return;
         }
 
-        $run(['mysqldump', "--defaults-extra-file={$secrets}", ...self::mysqlConnection($this->dsn), '--single-transaction', '--skip-lock-tables', '--no-tablespaces', '--routines', '--triggers', "--result-file={$dump}", '--', $this->dsn['dbname']], $base, null);
+        // Dumped as the source's user, which reads it; restored as the
+        // copies' own, which can reach nothing else.
+        $copySecrets = "{$directory}/my-copy.cnf";
+        $this->writeSecrets($copySecrets, $this->dsn);
+        $run(['mysqldump', "--defaults-extra-file={$secrets}", ...self::mysqlConnection($this->source), '--single-transaction', '--skip-lock-tables', '--no-tablespaces', '--routines', '--triggers', "--result-file={$dump}", '--', $this->source['dbname']], $base, null);
         self::assertNoClientCommands($dump);
-        $run(self::mysqlRestore($this->dsn, $secrets, $this->name), $base, $dump);
+        $run(self::mysqlRestore($this->dsn, $copySecrets, $this->name), $base, $dump);
     }
 
     /**
@@ -270,11 +384,15 @@ final class ServerCopy
         ];
     }
 
-    /** The source's user and password, for the tools, in a file only this user can read. */
-    private function writeSecrets(string $file): void
+    /**
+     * $dsn's user and password, for the tools, in a file only this user can read.
+     *
+     * @param array<string, string> $dsn
+     */
+    private function writeSecrets(string $file, #[\SensitiveParameter] array $dsn): void
     {
-        $user = $this->dsn['user'] ?? '';
-        $password = $this->dsn['password'] ?? '';
+        $user = $dsn['user'] ?? '';
+        $password = $dsn['password'] ?? '';
         $escape = static fn (string $value): string => str_replace(['\\', ':'], ['\\\\', '\\:'], $value);
         $text = $this->driver === 'pgsql'
             ? '*:*:*:' . $escape($user) . ':' . $escape($password) . "\n"
