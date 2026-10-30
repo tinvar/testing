@@ -7,9 +7,11 @@ namespace Tinvar\Testing\Dev;
 use Tinvar\Support\PrivateDirectory;
 
 /**
- * A copy of an SQLite database, in a directory of this process's own, that
- * goes when the process does: what `render --dump` and the MCP server render
- * against (ADR 0088).
+ * A copy of the application's database, in a directory of this process's
+ * own, that goes when the process does: what `render --dump` and the MCP
+ * server render against (ADR 0088). SQLite's is a file; a Postgres or
+ * MySQL database is copied into a database of its own on its server
+ * (ServerCopy, ADR 0113), dropped when this is removed.
  *
  * A dump signs in through the application's own sessions, which writes a
  * session row, and a scenario writes the users it makes. Against the copy,
@@ -23,9 +25,15 @@ final class DatabaseSnapshot
 
     private bool $removed = false;
 
+    /**
+     * @param string $path the SQLite copy's file; '' for a copy on a server
+     * @param string $database what the application is handed: the file, or the copy's DSN
+     */
     private function __construct(
         public readonly string $path,
         private readonly string $directory,
+        public readonly string $database = '',
+        private readonly ?ServerCopy $server = null,
     ) {
         $owner = getmypid() ?: 0;
         register_shutdown_function(function () use ($owner): void {
@@ -34,6 +42,35 @@ final class DatabaseSnapshot
                 $this->remove();
             }
         });
+    }
+
+    /**
+     * A private copy of the database $source names: an SQLite file's path,
+     * or a pgsql: or mysql: DSN.
+     */
+    public static function of(string $source): self
+    {
+        if (!ServerCopy::copies($source)) {
+            return self::ofSqlite($source);
+        }
+
+        PrivateDirectory::removeAbandoned(self::PREFIX);
+        $directory = PrivateDirectory::create(self::PREFIX, owner: getmypid() ?: null);
+        try {
+            $copy = ServerCopy::make($source, $directory);
+        } catch (\Throwable $e) {
+            PrivateDirectory::remove($directory);
+
+            throw $e;
+        }
+        // The dump and the credentials the tools read are not kept.
+        foreach (['dump', 'pgpass', 'my.cnf'] as $file) {
+            if (is_file("{$directory}/{$file}")) {
+                unlink("{$directory}/{$file}");
+            }
+        }
+
+        return new self('', $directory, $copy->dsn(), $copy);
     }
 
     /** A private copy of the SQLite database at $source. */
@@ -61,7 +98,7 @@ final class DatabaseSnapshot
         unset($original);
         chmod($path, 0600);
 
-        return new self($path, $directory);
+        return new self($path, $directory, $path);
     }
 
     /** Removes the copy, and whatever the application wrote beside it. */
@@ -71,6 +108,7 @@ final class DatabaseSnapshot
             return;
         }
         $this->removed = true;
+        $this->server?->drop();
         PrivateDirectory::remove($this->directory);
     }
 }

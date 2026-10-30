@@ -301,3 +301,84 @@ it('renders against a private copy of the database and never writes the original
     expect(static fn () => DatabaseSnapshot::ofSqlite('/nonexistent/shop.sqlite'))
         ->toThrow(\RuntimeException::class, 'no database');
 });
+
+// ADR 0113: a Postgres or MySQL database is copied on its server, by its
+// own dump and restore tools, into a database of its own -- and what can
+// not be copied that way is refused before anything is made.
+describe('a copy on a server', function () {
+    /** The Postgres server the tests use, as a DSN: TINVAR_TEST_PGSQL_DSN, or a local one pg_isready finds. */
+    function postgresDsn(): ?string
+    {
+        $dsn = getenv('TINVAR_TEST_PGSQL_DSN');
+        if (\is_string($dsn) && $dsn !== '') {
+            return $dsn;
+        }
+        exec('pg_isready -q 2>/dev/null', $output, $status);
+
+        return $status === 0 ? 'pgsql:host=' . (getenv('PGHOST') ?: 'localhost') . ';port=' . (getenv('PGPORT') ?: '5432') . ';dbname=postgres;user=' . (getenv('PGUSER') ?: 'postgres') : null;
+    }
+
+    it('copies a Postgres database into one of its own, reads the original only, and drops the copy', function () {
+        $server = postgresDsn() ?? test()->markTestSkipped('No Postgres server to copy on.');
+        try {
+            $admin = new \PDO($server);
+        } catch (\PDOException $e) {
+            test()->markTestSkipped("The Postgres server is not reachable: {$e->getMessage()}");
+        }
+        $source = 'tinvar_copy_src_' . bin2hex(random_bytes(4));
+        $admin->exec("CREATE DATABASE {$source}");
+        $sourceDsn = (string) preg_replace('/dbname=[^;]*/', "dbname={$source}", $server);
+        $original = new \PDO($sourceDsn);
+        $original->exec("CREATE TABLE customers (id int PRIMARY KEY, email text); INSERT INTO customers VALUES (1, 'ada@example.test')");
+
+        try {
+            try {
+                $snapshot = DatabaseSnapshot::of($sourceDsn);
+            } catch (\RuntimeException $e) {
+                // The tools on this PATH are older than the server: refused,
+                // which is the point, but there is nothing here to copy with.
+                if (str_contains($e->getMessage(), 'version mismatch')) {
+                    test()->markTestSkipped("pg_dump on the PATH cannot read this server: {$e->getMessage()}");
+                }
+
+                throw $e;
+            }
+            $copy = new \PDO($snapshot->database);
+            $copy->exec("INSERT INTO customers VALUES (2, 'written to the copy')");
+
+            expect($snapshot->database)->toMatch('/dbname=tinvar_dump_[0-9a-f]{8}_\d+_[0-9a-f]{8}(;|$)/')
+                ->and($copy->query('SELECT current_database()')?->fetchColumn())->not->toBe($source)
+                ->and($copy->query('SELECT COUNT(*) FROM customers')?->fetchColumn())->toBe(2)
+                ->and($original->query('SELECT COUNT(*) FROM customers')?->fetchColumn())->toBe(1);
+
+            unset($copy);
+            $snapshot->remove();
+            $left = $admin->query("SELECT COUNT(*) FROM pg_database WHERE datname LIKE 'tinvar\\_dump\\_%'")?->fetchColumn();
+            expect($left)->toBe(0);
+        } finally {
+            unset($original);
+            $admin->exec("DROP DATABASE IF EXISTS {$source} WITH (FORCE)");
+        }
+    });
+
+    it('refuses to copy without the server\'s own tools, and makes nothing', function (string $dsn, string $tool) {
+        $path = getenv('PATH');
+        putenv('PATH=/nonexistent');
+        try {
+            expect(static fn () => DatabaseSnapshot::of($dsn))->toThrow(\RuntimeException::class, "needs {$tool} on the PATH");
+        } finally {
+            putenv('PATH=' . $path);
+        }
+    })->with([
+        'postgres' => ['pgsql:host=127.0.0.1;dbname=shop;user=shop', 'pg_dump'],
+        'mysql' => ['mysql:host=127.0.0.1;dbname=shop;user=shop', 'mysqldump'],
+    ]);
+
+    it('refuses a DSN it cannot read whole', function (string $dsn, string $why) {
+        expect(static fn () => DatabaseSnapshot::of($dsn))->toThrow(\RuntimeException::class, $why);
+    })->with([
+        'no database' => ['pgsql:host=127.0.0.1;user=shop', 'names no dbname'],
+        'not key=value' => ['pgsql:host=127.0.0.1;dbname=shop;oops', 'not key=value'],
+        'a control character' => ["mysql:host=127.0.0.1;dbname=shop\nDROP;user=x", 'control character'],
+    ]);
+});

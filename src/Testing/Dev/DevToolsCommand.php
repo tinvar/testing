@@ -19,7 +19,8 @@ use Tinvar\Testing\RendererPool;
  *
  * Both refused before anything is read unless DevTools allows them here.
  * Each render is made on a private copy of the application's database
- * (DatabaseSnapshot), through a pool of the application's real renderers
+ * (DatabaseSnapshot) -- an SQLite file, or a database of its own on a
+ * Postgres or MySQL server -- through a pool of the application's real renderers
  * started on a build made for the test profile -- scrubbed of every secret,
  * in the production React build, as `tinvar serve` starts them -- and with
  * an application the caller builds on that copy and that pool, keyed by a
@@ -39,7 +40,8 @@ final class DevToolsCommand
     /**
      * @param string $app the application's directory, where dist-test/ is by default
      * @param string $projectRoot where node_modules and the renderer package are
-     * @param string $database the application's SQLite database, which is copied and never written
+     * @param string $database the application's database, which is copied and never written: an
+     *        SQLite file's path, or a pgsql: or mysql: DSN, copied on its server (ADR 0113)
      * @param \Closure(string, string, string, string|null): TestableApplication $application the
      *        application, built on a renderer pool's socket directory, a database, a key and
      *        the build its renderers run -- whose fragment manifest it reads -- or null
@@ -164,10 +166,10 @@ final class DevToolsCommand
             // The declarations, from an application on a copy of its own --
             // building one opens the database -- on a socket directory
             // nothing listens in: nothing it is asked renders.
-            $snapshot = DatabaseSnapshot::ofSqlite($this->database);
+            $snapshot = DatabaseSnapshot::of($this->database);
             $silent = PrivateDirectory::create('tinvar-mcp', owner: getmypid() ?: null);
             register_shutdown_function(static fn () => PrivateDirectory::remove($silent));
-            $kernel = ($this->application)($silent, $snapshot->path, self::key(), null)->kernel();
+            $kernel = ($this->application)($silent, $snapshot->database, self::key(), null)->kernel();
         } catch (\RuntimeException $e) {
             ($this->err)($e->getMessage());
 
@@ -197,10 +199,10 @@ final class DevToolsCommand
         return function (string $path, ?string $scenario) use ($pool, $build): array {
             RenderDump::assertPagePath($path);
             $pool->start();
-            $snapshot = DatabaseSnapshot::ofSqlite($this->database);
+            $snapshot = DatabaseSnapshot::of($this->database);
             try {
                 return self::underTheTestProfile(function () use ($pool, $snapshot, $build, $path, $scenario): array {
-                    $app = ($this->application)($pool->path, $snapshot->path, self::key(), $build);
+                    $app = ($this->application)($pool->path, $snapshot->database, self::key(), $build);
                     try {
                         return new RenderDump($app)->dump($path, $scenario);
                     } finally {
