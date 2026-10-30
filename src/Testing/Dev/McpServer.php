@@ -56,6 +56,15 @@ final class McpServer
     private const int METHOD_NOT_FOUND = -32601;
     private const int INVALID_PARAMS = -32602;
 
+    /** MCP's code for a resource it does not have. */
+    private const int RESOURCE_NOT_FOUND = -32002;
+
+    /** The scheme every resource is under: nothing here reads a file or a URL by name. */
+    public const string SCHEME = 'tinvar://';
+
+    /** How many of the log's last lines tinvar://logs reads. */
+    private const int RESOURCE_LOG_LINES = 50;
+
     private bool $initialized = false;
 
     private readonly Redactor $redactor;
@@ -161,8 +170,15 @@ final class McpServer
                 'ping' => new \stdClass(),
                 'tools/list' => $this->ready(['tools' => self::tools()]),
                 'tools/call' => $this->ready($this->call($params)),
+                'resources/list' => $this->ready(['resources' => self::resources()]),
+                'resources/templates/list' => $this->ready(['resourceTemplates' => self::resourceTemplates()]),
+                'resources/read' => $this->ready($this->read($params)),
+                'prompts/list' => $this->ready(['prompts' => self::prompts()]),
+                'prompts/get' => $this->ready($this->prompt($params)),
                 default => null,
             };
+        } catch (\OutOfBoundsException $e) {
+            return self::error($id, self::RESOURCE_NOT_FOUND, $e->getMessage());
         } catch (\InvalidArgumentException $e) {
             return self::error($id, self::INVALID_PARAMS, $e->getMessage());
         } catch (\LogicException $e) {
@@ -185,11 +201,15 @@ final class McpServer
 
         return [
             'protocolVersion' => \is_string($asked) && \in_array($asked, self::VERSIONS, true) ? $asked : self::VERSIONS[0],
-            'capabilities' => ['tools' => ['listChanged' => false]],
+            'capabilities' => [
+                'tools' => ['listChanged' => false],
+                'resources' => ['listChanged' => false, 'subscribe' => false],
+                'prompts' => ['listChanged' => false],
+            ],
             'serverInfo' => ['name' => self::NAME, 'version' => $this->version],
             'instructions' => 'A Tinvar application in development. Read its pages, queries, actions, models and settings '
                 . '(names and types, never values), the end of its log, and a page rendered as nobody or as a test scenario\'s '
-                . 'user. Nothing here writes, runs code or SQL, or reads a secret.',
+                . 'user -- as tools, or as tinvar:// resources -- and start from a prompt. Nothing here writes, runs code or SQL, or reads a secret.',
         ];
     }
 
@@ -249,6 +269,187 @@ final class McpServer
                 'annotations' => $readOnly,
             ],
         ];
+    }
+
+    /**
+     * The resources: the same declarations the tools answer, and the end of
+     * the log, under `tinvar://` -- names this server made, never a path or
+     * a URL a client chooses, so nothing is read by name (ADR 0113).
+     *
+     * @return list<array<string, string>>
+     */
+    public static function resources(): array
+    {
+        $resource = static fn (string $name, string $title, string $description): array => [
+            'uri' => self::SCHEME . $name,
+            'name' => $name,
+            'title' => $title,
+            'description' => $description,
+            'mimeType' => 'application/json',
+        ];
+
+        return [
+            $resource('routes', 'Routes', 'Every page and layout: path, view, class and file, its Data, abilities, panels and middleware.'),
+            $resource('queries', 'Queries', 'Every #[Query]: name, arguments and their types, what it returns, cache, abilities, panels.'),
+            $resource('actions', 'Actions', 'Every #[Action]: name, method and file, models and form requests, abilities, panels.'),
+            $resource('schema', 'Schema', 'Every model as its metadata declares it: table, key, columns, relations, tenant column.'),
+            $resource('config', 'Settings', 'Every setting the #[Config] classes read: variable, type, required, secret. Never a value.'),
+            $resource('logs', 'Log', 'The last ' . self::RESOURCE_LOG_LINES . ' lines of the application log, redacted.'),
+        ];
+    }
+
+    /** @return list<array<string, string>> */
+    public static function resourceTemplates(): array
+    {
+        return [[
+            'uriTemplate' => self::SCHEME . 'logs/{requestId}',
+            'name' => 'request-log',
+            'title' => 'One request\'s log lines',
+            'description' => 'The log lines of one request, by the id its response carried as X-Request-Id: redacted, ' . LogTail::MAX_LINES . ' at most.',
+            'mimeType' => 'application/json',
+        ]];
+    }
+
+    /**
+     * @param array<array-key, mixed> $params
+     * @return array<string, mixed>
+     */
+    private function read(array $params): array
+    {
+        $uri = $params['uri'] ?? null;
+        $unknown = array_diff(array_keys($params), ['uri', '_meta']);
+        if (!\is_string($uri) || $unknown !== []) {
+            throw new \InvalidArgumentException('resources/read takes a uri, and nothing else.');
+        }
+
+        $name = str_starts_with($uri, self::SCHEME) ? substr($uri, \strlen(self::SCHEME)) : null;
+        try {
+            $value = $this->resource($name, $uri);
+        } catch (\OutOfBoundsException $e) {
+            throw $e;
+        } catch (\Throwable $e) {
+            // As a tool's failure is answered: what failed, redacted, never a stack.
+            throw new \LogicException($this->redactor->text($e->getMessage()), previous: $e);
+        }
+
+        return ['contents' => [[
+            'uri' => $uri,
+            'mimeType' => 'application/json',
+            'text' => json_encode($value, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE | JSON_PRESERVE_ZERO_FRACTION),
+        ]]];
+    }
+
+    private function resource(?string $name, string $uri): mixed
+    {
+        return match (true) {
+            $name === 'routes' => $this->introspection->routes(),
+            $name === 'queries' => $this->introspection->queries(),
+            $name === 'actions' => $this->introspection->actions(),
+            $name === 'schema' => $this->introspection->schema(),
+            $name === 'config' => $this->introspection->config(),
+            $name === 'logs' => $this->readLogs(['lines' => self::RESOURCE_LOG_LINES]),
+            $name !== null && preg_match('/^logs\/([A-Za-z0-9_-]{1,64})\z/', $name, $m) === 1 => $this->readLogs(['lines' => LogTail::MAX_LINES, 'requestId' => $m[1]]),
+            default => throw new \OutOfBoundsException('No resource ' . $this->redactor->text(substr($uri, 0, 100)) . '; resources/list names every one.'),
+        };
+    }
+
+    /**
+     * The prompts: ways into the tools for a task a developer names, each a
+     * user message that asks the assistant to read with them. Their only
+     * arguments are a page's path and a request's id, each held to the rule
+     * its tool holds it to, so a prompt carries no text a client chose
+     * beyond those (ADR 0113).
+     *
+     * @return list<array<string, mixed>>
+     */
+    public static function prompts(): array
+    {
+        return [
+            [
+                'name' => 'explain_page',
+                'title' => 'Explain a page',
+                'description' => 'Where a page\'s data comes from: its route, loaders and Data, the queries its components call, and what it renders.',
+                'arguments' => [['name' => 'path', 'description' => 'The page, such as /orders; never under /_.', 'required' => true]],
+            ],
+            [
+                'name' => 'investigate_request',
+                'title' => 'Investigate a request',
+                'description' => 'What one request did and why it failed, from its log lines and the declarations they name.',
+                'arguments' => [['name' => 'requestId', 'description' => 'The X-Request-Id its response carried.', 'required' => true]],
+            ],
+            [
+                'name' => 'review_authorization',
+                'title' => 'Review authorization',
+                'description' => 'Every page, query and action with the abilities and panels that guard it, and any that nothing guards.',
+                'arguments' => [],
+            ],
+        ];
+    }
+
+    /**
+     * @param array<array-key, mixed> $params
+     * @return array<string, mixed>
+     */
+    private function prompt(array $params): array
+    {
+        $name = $params['name'] ?? null;
+        $arguments = $params['arguments'] ?? [];
+        if (!\is_string($name) || !\is_array($arguments) || ($arguments !== [] && array_is_list($arguments))) {
+            throw new \InvalidArgumentException('prompts/get names a prompt, and its arguments are an object.');
+        }
+        $declared = null;
+        foreach (self::prompts() as $candidate) {
+            if ($candidate['name'] === $name) {
+                $declared = $candidate;
+            }
+        }
+        if ($declared === null) {
+            throw new \InvalidArgumentException("No prompt '" . substr($name, 0, 100) . "'.");
+        }
+        /** @var list<array{name: string}> $takes */
+        $takes = $declared['arguments'];
+        $unknown = array_diff(array_keys($arguments), array_column($takes, 'name'));
+        if ($unknown !== []) {
+            throw new \InvalidArgumentException("{$name} takes no " . implode(', ', $unknown) . '.');
+        }
+
+        $text = match ($name) {
+            'explain_page' => $this->explainPage($arguments['path'] ?? null),
+            'investigate_request' => self::investigateRequest($arguments['requestId'] ?? null),
+            default => 'Review how this Tinvar application authorizes what it serves. Read the routes, queries and actions tools: '
+                . 'list every page, query and action with its #[Authorize] abilities and panels, then name any that nothing guards '
+                . 'and say whether each looks deliberate -- a public page, a #[PublicAccess] action -- or a gap. Quote no setting\'s value '
+                . 'and run nothing; the tools only read.',
+        };
+
+        return [
+            'description' => $declared['description'],
+            'messages' => [['role' => 'user', 'content' => ['type' => 'text', 'text' => $text]]],
+        ];
+    }
+
+    private function explainPage(mixed $path): string
+    {
+        if (!\is_string($path)) {
+            throw new \InvalidArgumentException('explain_page takes path, a page\'s path.');
+        }
+        RenderDump::assertPagePath($path);
+
+        return "Explain the page at {$path} in this Tinvar application. Use the routes tool to find the route that serves it, its layouts "
+            . 'and the Data each loader returns; the queries tool for the queries its components may call; and '
+            . ($this->dump === null ? 'say that render_dump is off here, so the page is not rendered.' : "render_dump with path {$path} to see what it renders.")
+            . ' Say where each part of the page comes from, and which #[Authorize] checks guard it.';
+    }
+
+    private static function investigateRequest(mixed $id): string
+    {
+        if (!\is_string($id) || preg_match('/^[A-Za-z0-9_-]{1,64}\z/', $id) !== 1) {
+            throw new \InvalidArgumentException('investigate_request takes requestId, a request\'s id.');
+        }
+
+        return "Investigate the request {$id} in this Tinvar application. Read its log lines with the logs tool, requestId {$id}, "
+            . 'or the resource ' . self::SCHEME . "logs/{$id}. Name the route or endpoint it reached, what failed and where, using the "
+            . 'routes, queries and actions tools for the code the lines name. The lines are redacted: do not try to recover what was cut out.';
     }
 
     /**
