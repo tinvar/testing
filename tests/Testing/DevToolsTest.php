@@ -363,6 +363,105 @@ describe('a copy on a server', function () {
         }
     });
 
+    /**
+     * Runs $test against the MySQL server TINVAR_TEST_MYSQL_DSN names, as
+     * that DSN's user (which must create users and databases), with a
+     * source database of the test's own and a copies' user made as ADR 0113
+     * says -- granted `tinvar\_dump\_%` alone -- both dropped after.
+     *
+     * @param \Closure(\PDO, string, Secret, string): void $test given the server, the source's DSN, the copies' user and the source's name
+     */
+    function onMySql(\Closure $test): void
+    {
+        $server = getenv('TINVAR_TEST_MYSQL_DSN');
+        if (!\is_string($server) || $server === '') {
+            test()->markTestSkipped('MySQL: set TINVAR_TEST_MYSQL_DSN.');
+        }
+        foreach (['mysqldump', 'mysql'] as $tool) {
+            exec('command -v ' . escapeshellarg($tool) . ' 2>/dev/null', $found, $status);
+            if ($status !== 0) {
+                test()->markTestSkipped("No {$tool} on the PATH to copy MySQL with.");
+            }
+        }
+        $admin = new \PDO($server, options: [\PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION]);
+        $suffix = bin2hex(random_bytes(4));
+        $source = "tinvar_copy_src_{$suffix}";
+        $user = "tinvar_copies_{$suffix}";
+        $password = bin2hex(random_bytes(12));
+        $admin->exec("CREATE DATABASE `{$source}`");
+        $admin->exec("CREATE USER '{$user}'@'%' IDENTIFIED BY '{$password}'");
+        $admin->exec("GRANT ALL ON `tinvar\\_dump\\_%`.* TO '{$user}'@'%'");
+        $sourceDsn = (string) preg_replace('/dbname=[^;]*/', "dbname={$source}", $server);
+        $copies = (string) preg_replace(['/;?dbname=[^;]*/', '/;?user=[^;]*/', '/;?password=[^;]*/'], '', $server) . ";user={$user};password={$password}";
+
+        try {
+            $test($admin, $sourceDsn, new Secret($copies), $source);
+        } finally {
+            $admin->exec("DROP DATABASE IF EXISTS `{$source}`");
+            $admin->exec("DROP USER IF EXISTS '{$user}'@'%'");
+        }
+    }
+
+    function copiesLeft(\PDO $admin): int
+    {
+        return \count($admin->query("SHOW DATABASES LIKE 'tinvar\\_dump\\_%'")?->fetchAll(\PDO::FETCH_COLUMN) ?: []);
+    }
+
+    it('copies a MySQL database into one of its own as the copies\' user, reads the original only, and drops the copy', function () {
+        onMySql(function (\PDO $admin, string $sourceDsn, Secret $copies, string $source): void {
+            $admin->exec("CREATE TABLE `{$source}`.customers (id INT PRIMARY KEY, email TEXT)");
+            $admin->exec("CREATE TABLE `{$source}`.orders (id INT PRIMARY KEY, customer INT)");
+            $admin->exec("INSERT INTO `{$source}`.customers VALUES (1, 'ada@example.test')");
+            $before = copiesLeft($admin);
+
+            $snapshot = DatabaseSnapshot::of($sourceDsn, $copies);
+            $copy = new \PDO($snapshot->database, options: [\PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION]);
+            $copy->exec("INSERT INTO customers VALUES (2, 'written to the copy')");
+
+            expect($snapshot->database)->toMatch('/dbname=tinvar_dump_[0-9a-f]{8}_\d+_[0-9a-f]{8}$/')
+                ->and($snapshot->database)->toContain('user=tinvar_copies_')
+                ->and($copy->query('SELECT COUNT(*) FROM customers')?->fetchColumn())->toBe(2)
+                ->and($copy->query('SELECT COUNT(*) FROM orders')?->fetchColumn())->toBe(0)
+                ->and($admin->query("SELECT COUNT(*) FROM `{$source}`.customers")?->fetchColumn())->toBe(1)
+                // What the render is handed cannot reach the live data by name.
+                ->and(static fn () => $copy->query("SELECT * FROM `{$source}`.customers"))->toThrow(\PDOException::class, 'denied')
+                ->and(static fn () => $copy->exec("INSERT INTO `{$source}`.customers VALUES (3, 'x')"))->toThrow(\PDOException::class, 'denied');
+
+            unset($copy);
+            $snapshot->remove();
+            expect(copiesLeft($admin))->toBe($before);
+        });
+    });
+
+    it('refuses on a real server a copies\' user that could reach the live database, and makes nothing', function () {
+        onMySql(function (\PDO $admin, string $sourceDsn, Secret $copies, string $source): void {
+            preg_match('/user=([^;]+)/', $copies->reveal(), $user);
+            $admin->exec("GRANT SELECT ON `{$source}`.* TO '{$user[1]}'@'%'");
+            $before = copiesLeft($admin);
+
+            expect(static fn () => DatabaseSnapshot::of($sourceDsn, $copies))->toThrow(\RuntimeException::class, 'beyond the copies')
+                ->and(copiesLeft($admin))->toBe($before);
+        });
+    });
+
+    it('refuses a MySQL database with a view, trigger or routine its definer made, and leaves no copy', function (string $object) {
+        onMySql(function (\PDO $admin, string $sourceDsn, Secret $copies, string $source) use ($object): void {
+            $admin->exec("CREATE TABLE `{$source}`.customers (id INT PRIMARY KEY, email TEXT)");
+            $admin->exec(str_replace('{source}', $source, $object));
+            $before = copiesLeft($admin);
+
+            // The copies' user may not act as another definer, nor make a
+            // trigger or routine while the binary log is on: the restore
+            // fails, and nothing half-restored is handed over.
+            expect(static fn () => DatabaseSnapshot::of($sourceDsn, $copies))->toThrow(\RuntimeException::class, 'mysql failed')
+                ->and(copiesLeft($admin))->toBe($before);
+        });
+    })->with([
+        'a view' => ['CREATE VIEW `{source}`.emails AS SELECT email FROM `{source}`.customers'],
+        'a trigger' => ['CREATE TRIGGER `{source}`.lower_email BEFORE INSERT ON `{source}`.customers FOR EACH ROW SET NEW.email = LOWER(NEW.email)'],
+        'a routine' => ['CREATE PROCEDURE `{source}`.one() SELECT 1'],
+    ]);
+
     it('refuses to copy without the server\'s own tools, and makes nothing', function (string $dsn, string $tool) {
         $path = getenv('PATH');
         putenv('PATH=/nonexistent');
@@ -382,12 +481,13 @@ describe('a copy on a server', function () {
         mkdir($directory, 0700);
 
         try {
-            file_put_contents("{$directory}/clean", "/*!999999\\- enable the sandbox mode */\nINSERT INTO `t` VALUES ('a\\nb');\n");
+            file_put_contents("{$directory}/clean", "/*!999999\\- enable the sandbox mode */\nCREATE TABLE `t` (\n  `v` text\n);\nINSERT INTO `t` VALUES ('CREATE TABLE `u`\\n');\n/*!50001 CREATE VIEW `w` AS SELECT 1 AS `v`*/;\nCREATE TABLE `x` (\n  `v` int\n);\n");
             file_put_contents("{$directory}/shell", "INSERT INTO `t` VALUES (1);\n\\! touch /tmp/owned\n");
             file_put_contents("{$directory}/source", "  \\. /etc/passwd\n");
 
-            ServerCopy::assertNoClientCommands("{$directory}/clean");
-            expect($restore)->toBe(['mysql', '--defaults-extra-file=/private/my.cnf', '--host=db', '--port=3306', '--binary-mode', '--one-database', '--database=tinvar_dump_x'])
+            // Two tables, the restore is held to: a view's or a value's are not counted.
+            expect(ServerCopy::assertNoClientCommands("{$directory}/clean"))->toBe(2)
+                ->and($restore)->toBe(['mysql', '--defaults-extra-file=/private/my.cnf', '--host=db', '--port=3306', '--binary-mode', '--one-database', '--', 'tinvar_dump_x'])
                 ->and(static fn () => ServerCopy::assertNoClientCommands("{$directory}/shell"))->toThrow(\RuntimeException::class, 'command of its own')
                 ->and(static fn () => ServerCopy::assertNoClientCommands("{$directory}/source"))->toThrow(\RuntimeException::class, 'command of its own');
         } finally {

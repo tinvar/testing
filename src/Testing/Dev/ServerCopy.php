@@ -347,8 +347,25 @@ final class ServerCopy
         $copySecrets = "{$directory}/my-copy.cnf";
         $this->writeSecrets($copySecrets, $this->dsn);
         $run(['mysqldump', "--defaults-extra-file={$secrets}", ...self::mysqlConnection($this->source), '--single-transaction', '--skip-lock-tables', '--no-tablespaces', '--routines', '--triggers', "--result-file={$dump}", '--', $this->source['dbname']], $base, null);
-        self::assertNoClientCommands($dump);
+        $tables = self::assertNoClientCommands($dump);
         $run(self::mysqlRestore($this->dsn, $copySecrets, $this->name), $base, $dump);
+        $this->assertRestored($tables);
+    }
+
+    /**
+     * That the copy holds every table the dump made. The client exits 0
+     * when --one-database skips a statement, so a restore that skipped
+     * them all looked like one that worked; an empty copy rendered is a
+     * page that says nothing true about the application's data.
+     */
+    private function assertRestored(int $tables): void
+    {
+        $pdo = self::connect($this->driver, $this->dsn, $this->name);
+        $statement = $pdo->query("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE'");
+        $restored = $statement === false ? null : (int) $statement->fetchColumn();
+        if ($restored !== $tables) {
+            throw new \RuntimeException("The dump made {$tables} tables and the copy holds " . ($restored ?? '?') . '; it is not handed over.');
+        }
     }
 
     /**
@@ -362,13 +379,18 @@ final class ServerCopy
      * database's names, routines and data. `--one-database` skips any
      * statement a `USE` of another database would have run.
      *
+     * The copy is named as the argument, not `--database=`: `--one-database`
+     * holds to the database the argument names, and with none named that
+     * way it skipped every statement, restored nothing, and still exited 0
+     * -- an empty copy, found by running it against MySQL 8.4.
+     *
      * @internal
      * @param array<string, string> $dsn where the copy is
      * @return list<string>
      */
     public static function mysqlRestore(array $dsn, string $secrets, string $copy): array
     {
-        return ['mysql', "--defaults-extra-file={$secrets}", ...self::mysqlConnection($dsn), '--binary-mode', '--one-database', "--database={$copy}"];
+        return ['mysql', "--defaults-extra-file={$secrets}", ...self::mysqlConnection($dsn), '--binary-mode', '--one-database', '--', $copy];
     }
 
     /**
@@ -377,11 +399,15 @@ final class ServerCopy
      * written `\n` -- so one there was put there, and is not restored even
      * with --binary-mode to stop it.
      *
+     * Returns how many tables the dump makes, read on the way, for the
+     * restore to be held to.
+     *
      * @internal
      * @throws \RuntimeException
      */
-    public static function assertNoClientCommands(string $dump): void
+    public static function assertNoClientCommands(string $dump): int
     {
+        $tables = 0;
         $handle = @fopen($dump, 'rb');
         if ($handle === false) {
             throw new \RuntimeException('The dump could not be read back; nothing was restored.');
@@ -391,10 +417,15 @@ final class ServerCopy
                 if (preg_match('/^[ \t]*\\\\/', $line) === 1) {
                     throw new \RuntimeException('The dump holds a line the mysql client would read as a command of its own; nothing was restored.');
                 }
+                if (str_starts_with($line, 'CREATE TABLE `')) {
+                    $tables++;
+                }
             }
         } finally {
             fclose($handle);
         }
+
+        return $tables;
     }
 
     /**
