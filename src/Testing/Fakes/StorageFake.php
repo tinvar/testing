@@ -8,6 +8,7 @@ use PHPUnit\Framework\Assert;
 use Tinvar\Storage\MemoryStorage;
 use Tinvar\Storage\Storage;
 use Tinvar\Storage\StorageKey;
+use Tinvar\Storage\StorageWriter;
 
 /**
  * The storage fake: hand it to the application as the Storage its uploads
@@ -52,6 +53,11 @@ final class StorageFake implements Storage
     public function delete(string $key): void
     {
         $this->files->delete($key);
+    }
+
+    public function writer(string $key): StorageWriter
+    {
+        return $this->files->writer($key);
     }
 
     /**
