@@ -37,7 +37,7 @@ use Tinvar\Tests\Orm\Fixtures\Script;
 
 use function Tinvar\Testing\expectQueries;
 
-require_once __DIR__ . '/../../../framework/tests/Jobs/Fixtures/jobs.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/framework') . '/tests/Jobs/Fixtures/jobs.php';
 
 final readonly class NoticeData extends Data
 {

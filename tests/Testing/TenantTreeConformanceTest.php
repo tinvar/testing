@@ -15,7 +15,7 @@ use Tinvar\Orm\TenantSubtrees;
 use Tinvar\Testing\TenantTreeConformance;
 use Tinvar\Tests\Orm\Fixtures\Tenancy;
 
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/tenancy.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/tenancy.php';
 
 /** Answers its subtrees from a record other than its parents: a parent reads a tenant that is not its child. */
 final readonly class TwoRecords implements TenantSubtrees

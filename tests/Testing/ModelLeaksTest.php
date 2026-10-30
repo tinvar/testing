@@ -23,7 +23,7 @@ use Tinvar\Support\Uuid;
 use Tinvar\Testing\ModelLeaks;
 use Tinvar\Tests\Orm\Fixtures\Tenancy;
 
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/tenancy.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/tenancy.php';
 
 #[Table('leak_accounts'), TenantScoped]
 final class Account extends Model
