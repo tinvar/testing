@@ -28,15 +28,18 @@ final class LazyLoadAssertion
         }
 
         $alone = [];
-        foreach ($loads as $load) {
-            if (!$load->inBatch()) {
-                $alone[$load->relation] = ($alone[$load->relation] ?? 0) + 1;
+        $looped = [];
+        foreach (LazyLoad::outsideBatch($loads) as $load) {
+            $alone[$load->relation] = ($alone[$load->relation] ?? 0) + 1;
+            if ($load->batch === LazyLoad::ONE_ROW) {
+                $looped[$load->relation] = true;
             }
         }
 
         Assert::assertSame([], $alone, "{$subject} loaded relations outside a batch, each for one parent alone -- the 1+N the batching exists to prevent: "
             . implode(', ', array_map(
-                static fn (string $relation, int $times): string => $relation . ($times === 1 ? '' : " ({$times} times)"),
+                static fn (string $relation, int $times): string => $relation . ($times === 1 ? '' : " ({$times} times)")
+                    . (isset($looped[$relation]) ? ', each on the one row a statement read: a loop over find()? Read the rows in one query' : ''),
                 array_keys($alone),
                 $alone,
             )) . '.');
