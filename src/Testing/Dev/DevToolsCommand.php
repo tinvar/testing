@@ -16,8 +16,8 @@ use Tinvar\Testing\RendererPool;
  * `tinvar render --dump` and `tinvar mcp`, for an application's command line
  * (ADR 0088).
  *
- *   tinvar render --dump PATH [--as=SCENARIO] [--build=DIR] [--part=html|payload] [--json]
- *   tinvar mcp [--build=DIR]
+ *   tinvar render --dump PATH [--as=SCENARIO] [--build=DIR | --dev] [--part=html|payload] [--json]
+ *   tinvar mcp [--build=DIR | --dev]
  *
  * Both refused before anything is read unless DevTools allows them here.
  * Each render is made on a private copy of the application's database
@@ -28,6 +28,14 @@ use Tinvar\Testing\RendererPool;
  * an application the caller builds on that copy and that pool, keyed by a
  * key made for the one render: what the dump shows was signed by nothing
  * the application's real sessions would take.
+ *
+ * With --dev, the renderer is instead the dev server of the `tinvar dev`
+ * running for the application (DevServerRun), and the application is built
+ * in dev mode, with the deferred manifest that dev server keeps: the page
+ * as the developer's browser is drawn it, from source, with no build to
+ * make first (ADR 0132). Everything else is as it was -- the copy, the key,
+ * the redaction -- and the dev server is the one already rendering the
+ * developer's own pages, given nothing but the render frames of the copy.
  */
 final class DevToolsCommand
 {
@@ -44,9 +52,11 @@ final class DevToolsCommand
      * @param string $projectRoot where node_modules and the renderer package are
      * @param string $database the application's database, which is copied and never written: an
      *        SQLite file's path, or a pgsql: or mysql: DSN, copied on its server (ADR 0113)
-     * @param \Closure(string, string, string, string|null): TestableApplication $application the
+     * @param \Closure(string, string, string, string|null, string|null): TestableApplication $application the
      *        application, built on a renderer pool's socket directory, a database, a key and
-     *        the build its renderers run -- whose fragment manifest it reads -- or null
+     *        the build its renderers run -- whose fragment manifest it reads -- or null; and,
+     *        rendering through `tinvar dev`, on its dev renderer's socket with no build and the
+     *        deferred manifest its dev server keeps, which says to build it in dev mode
      * @param list<class-string<Model>> $models the application's models, for the schema
      * @param list<class-string> $configs the application's #[Config] classes
      * @param string|null $log the application's log file
@@ -75,12 +85,12 @@ final class DevToolsCommand
     /** @param list<string> $arguments what follows `render` */
     public function render(array $arguments): int
     {
-        $usage = 'usage: tinvar render --dump PATH [--as=SCENARIO] [--build=DIR] [--part=html|payload] [--json]';
+        $usage = 'usage: tinvar render --dump PATH [--as=SCENARIO] [--build=DIR | --dev] [--part=html|payload] [--json]';
         $options = [];
         $paths = [];
         $dump = false;
         foreach ($arguments as $argument) {
-            if ($argument === '--dump' || $argument === '--json') {
+            if ($argument === '--dump' || $argument === '--json' || $argument === '--dev') {
                 $options[$argument] = true;
                 $dump = $dump || $argument === '--dump';
             } elseif (preg_match('/^--(as|build|part)=(.+)\z/s', $argument, $m) === 1) {
@@ -94,7 +104,8 @@ final class DevToolsCommand
             }
         }
         $part = $options['part'] ?? null;
-        if (!$dump || \count($paths) !== 1 || ($part !== null && !\in_array($part, ['html', 'payload'], true))) {
+        $dev = isset($options['--dev']);
+        if (!$dump || \count($paths) !== 1 || ($part !== null && !\in_array($part, ['html', 'payload'], true)) || ($dev && isset($options['build']))) {
             ($this->err)($usage);
 
             return self::USAGE;
@@ -102,9 +113,14 @@ final class DevToolsCommand
 
         try {
             DevTools::assertAllowed('tinvar render --dump', $this->env);
-            $build = $this->build($options['build'] ?? null);
-            DevTools::assertTestBuild('tinvar render --dump', $build);
-            $dumped = $this->dumper($build)($paths[0], \is_string($options['as'] ?? null) ? $options['as'] : null);
+            if ($dev) {
+                $dumper = $this->devDumper();
+            } else {
+                $build = $this->build(\is_string($options['build'] ?? null) ? $options['build'] : null);
+                DevTools::assertTestBuild('tinvar render --dump', $build);
+                $dumper = $this->dumper($build);
+            }
+            $dumped = $dumper($paths[0], \is_string($options['as'] ?? null) ? $options['as'] : null);
         } catch (\InvalidArgumentException $e) {
             ($this->err)($e->getMessage());
 
@@ -136,13 +152,22 @@ final class DevToolsCommand
     public function mcp(array $arguments, $in = null, $out = null): int
     {
         $build = null;
+        $dev = false;
         foreach ($arguments as $argument) {
-            if (preg_match('/^--build=(.+)\z/s', $argument, $m) !== 1) {
-                ($this->err)("Unknown argument '{$argument}'.\nusage: tinvar mcp [--build=DIR]");
+            if ($argument === '--dev') {
+                $dev = true;
+            } elseif (preg_match('/^--build=(.+)\z/s', $argument, $m) === 1) {
+                $build = $m[1];
+            } else {
+                ($this->err)("Unknown argument '{$argument}'.\nusage: tinvar mcp [--build=DIR | --dev]");
 
                 return self::USAGE;
             }
-            $build = $m[1];
+        }
+        if ($dev && $build !== null) {
+            ($this->err)('--dev renders through `tinvar dev`, and --build through a build: one or the other.');
+
+            return self::USAGE;
         }
 
         try {
@@ -156,9 +181,17 @@ final class DevToolsCommand
         $dump = null;
         $directory = null;
         try {
-            $directory = $this->build($build);
-            DevTools::assertTestBuild('tinvar mcp', $directory);
-            $dump = $this->dumper($directory);
+            if ($dev) {
+                // Found again at each render: a dev run may be restarted
+                // while the server answers, and one stopped renders nothing.
+                DevServerRun::find($this->app);
+                $directory = '`tinvar dev`';
+                $dump = $this->devDumper();
+            } else {
+                $directory = $this->build($build);
+                DevTools::assertTestBuild('tinvar mcp', $directory);
+                $dump = $this->dumper($directory);
+            }
         } catch (\RuntimeException $e) {
             // Everything but render_dump still answers; it says why not.
             ($this->err)("render_dump is off: {$e->getMessage()}");
@@ -171,7 +204,7 @@ final class DevToolsCommand
             $snapshot = $this->snapshot();
             $silent = PrivateDirectory::create('tinvar-mcp', owner: getmypid() ?: null);
             register_shutdown_function(static fn () => PrivateDirectory::remove($silent));
-            $kernel = ($this->application)($silent, $snapshot->database, self::key(), null)->kernel();
+            $kernel = ($this->application)($silent, $snapshot->database, self::key(), null, null)->kernel();
         } catch (\RuntimeException $e) {
             ($this->err)($e->getMessage());
 
@@ -217,7 +250,39 @@ final class DevToolsCommand
             $snapshot = $this->snapshot();
             try {
                 return self::underTheTestProfile(function () use ($pool, $snapshot, $build, $path, $scenario): array {
-                    $app = ($this->application)($pool->path, $snapshot->database, self::key(), $build);
+                    $app = ($this->application)($pool->path, $snapshot->database, self::key(), $build, null);
+                    try {
+                        return new RenderDump($app)->dump($path, $scenario);
+                    } finally {
+                        $app->kernel()->scope->reset();
+                    }
+                });
+            } finally {
+                $snapshot->remove();
+            }
+        };
+    }
+
+    /**
+     * Renders a path through the dev server of the `tinvar dev` running for
+     * the application, found afresh each time, on a fresh copy of the
+     * database and with a key of its own: the application built in dev
+     * mode, with the deferred manifest the dev server keeps from its module
+     * graph, so a route mints fragment tokens as the developer's own pages
+     * do. As the test profile's server, as a build's dump is, so a
+     * scenario's user may be seeded into the copy.
+     *
+     * @return \Closure(string, string|null): array<string, mixed>
+     */
+    private function devDumper(): \Closure
+    {
+        return function (string $path, ?string $scenario): array {
+            RenderDump::assertPagePath($path);
+            $run = DevServerRun::find($this->app);
+            $snapshot = $this->snapshot();
+            try {
+                return self::underTheTestProfile(function () use ($run, $snapshot, $path, $scenario): array {
+                    $app = ($this->application)($run->socket, $snapshot->database, self::key(), null, $run->deferred);
                     try {
                         return new RenderDump($app)->dump($path, $scenario);
                     } finally {
