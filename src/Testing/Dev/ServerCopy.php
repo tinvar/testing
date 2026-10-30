@@ -206,14 +206,68 @@ final class ServerCopy
             return;
         }
 
-        $connection = [
-            ...(isset($this->dsn['host']) ? ["--host={$this->dsn['host']}"] : []),
-            ...(isset($this->dsn['port']) ? ["--port={$this->dsn['port']}"] : []),
-            ...(isset($this->dsn['unix_socket']) ? ["--socket={$this->dsn['unix_socket']}"] : []),
+        $run(['mysqldump', "--defaults-extra-file={$secrets}", ...self::mysqlConnection($this->dsn), '--single-transaction', '--skip-lock-tables', '--no-tablespaces', '--routines', '--triggers', "--result-file={$dump}", '--', $this->dsn['dbname']], $base, null);
+        self::assertNoClientCommands($dump);
+        $run(self::mysqlRestore($this->dsn, $secrets, $this->name), $base, $dump);
+    }
+
+    /**
+     * The `mysql` command that restores a dump, read from standard input,
+     * into $copy alone.
+     *
+     * `--binary-mode` turns off every one of the client's own commands but
+     * `delimiter` and `charset` -- `\!` and `system`, which run a shell
+     * command, `source`, `connect`, `use` -- so nothing in the dump is
+     * anything but SQL sent to the server: the dump holds the live
+     * database's names, routines and data. `--one-database` skips any
+     * statement a `USE` of another database would have run.
+     *
+     * @internal
+     * @param array<string, string> $dsn where the copy is
+     * @return list<string>
+     */
+    public static function mysqlRestore(array $dsn, string $secrets, string $copy): array
+    {
+        return ['mysql', "--defaults-extra-file={$secrets}", ...self::mysqlConnection($dsn), '--binary-mode', '--one-database', "--database={$copy}"];
+    }
+
+    /**
+     * Refuses a dump with a line that begins as the client's own command
+     * does, a backslash: mysqldump writes none -- a newline in a value is
+     * written `\n` -- so one there was put there, and is not restored even
+     * with --binary-mode to stop it.
+     *
+     * @internal
+     * @throws \RuntimeException
+     */
+    public static function assertNoClientCommands(string $dump): void
+    {
+        $handle = @fopen($dump, 'rb');
+        if ($handle === false) {
+            throw new \RuntimeException('The dump could not be read back; nothing was restored.');
+        }
+        try {
+            while (($line = fgets($handle)) !== false) {
+                if (preg_match('/^[ \t]*\\\\/', $line) === 1) {
+                    throw new \RuntimeException('The dump holds a line the mysql client would read as a command of its own; nothing was restored.');
+                }
+            }
+        } finally {
+            fclose($handle);
+        }
+    }
+
+    /**
+     * @param array<string, string> $dsn
+     * @return list<string>
+     */
+    private static function mysqlConnection(array $dsn): array
+    {
+        return [
+            ...(isset($dsn['host']) ? ["--host={$dsn['host']}"] : []),
+            ...(isset($dsn['port']) ? ["--port={$dsn['port']}"] : []),
+            ...(isset($dsn['unix_socket']) ? ["--socket={$dsn['unix_socket']}"] : []),
         ];
-        $run(['mysqldump', "--defaults-extra-file={$secrets}", ...$connection, '--single-transaction', '--skip-lock-tables', '--no-tablespaces', '--routines', '--triggers', "--result-file={$dump}", '--', $this->dsn['dbname']], $base, null);
-        // Held to the copy: a statement in the dump for any other database is skipped.
-        $run(['mysql', "--defaults-extra-file={$secrets}", ...$connection, '--one-database', "--database={$this->name}"], $base, $dump);
     }
 
     /** The source's user and password, for the tools, in a file only this user can read. */

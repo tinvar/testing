@@ -22,6 +22,7 @@ use Tinvar\Testing\Dev\DatabaseSnapshot;
 use Tinvar\Testing\Dev\DevTools;
 use Tinvar\Testing\Dev\LogTail;
 use Tinvar\Testing\Dev\RenderDump;
+use Tinvar\Testing\Dev\ServerCopy;
 
 /** An application that answers every request with the page it was given, and says who asked. */
 final class Pages implements BrowserTestable
@@ -373,6 +374,26 @@ describe('a copy on a server', function () {
         'postgres' => ['pgsql:host=127.0.0.1;dbname=shop;user=shop', 'pg_dump'],
         'mysql' => ['mysql:host=127.0.0.1;dbname=shop;user=shop', 'mysqldump'],
     ]);
+
+    it('restores a MySQL dump in binary mode, into the copy alone, and refuses one carrying a client command', function () {
+        $restore = ServerCopy::mysqlRestore(['host' => 'db', 'port' => '3306', 'dbname' => 'shop'], '/private/my.cnf', 'tinvar_dump_x');
+        $directory = sys_get_temp_dir() . '/tinvar-dump-' . bin2hex(random_bytes(4));
+        mkdir($directory, 0700);
+
+        try {
+            file_put_contents("{$directory}/clean", "/*!999999\\- enable the sandbox mode */\nINSERT INTO `t` VALUES ('a\\nb');\n");
+            file_put_contents("{$directory}/shell", "INSERT INTO `t` VALUES (1);\n\\! touch /tmp/owned\n");
+            file_put_contents("{$directory}/source", "  \\. /etc/passwd\n");
+
+            ServerCopy::assertNoClientCommands("{$directory}/clean");
+            expect($restore)->toBe(['mysql', '--defaults-extra-file=/private/my.cnf', '--host=db', '--port=3306', '--binary-mode', '--one-database', '--database=tinvar_dump_x'])
+                ->and(static fn () => ServerCopy::assertNoClientCommands("{$directory}/shell"))->toThrow(\RuntimeException::class, 'command of its own')
+                ->and(static fn () => ServerCopy::assertNoClientCommands("{$directory}/source"))->toThrow(\RuntimeException::class, 'command of its own');
+        } finally {
+            array_map(unlink(...), glob("{$directory}/*") ?: []);
+            rmdir($directory);
+        }
+    });
 
     it('refuses a DSN it cannot read whole', function (string $dsn, string $why) {
         expect(static fn () => DatabaseSnapshot::of($dsn))->toThrow(\RuntimeException::class, $why);
