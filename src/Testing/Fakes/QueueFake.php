@@ -193,14 +193,14 @@ final class QueueFake implements Queue, Coordination
         return $this->queue->unlock($key, $job);
     }
 
-    public function slot(string $queue, int $runs, int $per, int $now): bool
+    public function slot(string $key, int $runs, int $per, int $now, bool $sliding = false): int
     {
-        return $this->queue->slot($queue, $runs, $per, $now);
+        return $this->queue->slot($key, $runs, $per, $now, $sliding);
     }
 
-    public function unslot(string $queue, int $per, int $now): void
+    public function unslot(string $key, int $per, int $now, bool $sliding = false): void
     {
-        $this->queue->unslot($queue, $per, $now);
+        $this->queue->unslot($key, $per, $now, $sliding);
     }
 
     public function addBatch(BatchRecord $batch): void
@@ -211,6 +211,11 @@ final class QueueFake implements Queue, Coordination
     public function batch(string $id): ?BatchRecord
     {
         return $this->queue->batch($id);
+    }
+
+    public function addToBatch(string $id, int $jobs): bool
+    {
+        return $this->queue->addToBatch($id, $jobs);
     }
 
     public function batchJobDone(string $id, string $job, int $now): ?BatchStep
