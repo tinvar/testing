@@ -184,6 +184,9 @@ final class ServerCopy
             if (str_contains($grant, 'WITH GRANT OPTION') || str_contains($grant, 'WITH ADMIN OPTION')) {
                 return 'it may grant what it holds to others';
             }
+            if (str_starts_with($grant, 'MANDATORY ROLES ')) {
+                return 'every user is given the roles mandatory_roles names';
+            }
             if (preg_match('/^GRANT USAGE ON \*\.\* TO .+\z/s', $grant) === 1) {
                 continue;
             }
@@ -200,12 +203,17 @@ final class ServerCopy
     }
 
     /**
-     * The connected user's grants, and any role it has active as one more
-     * line, so that it is refused: a role's grants are not in SHOW GRANTS.
+     * The connected user's grants, and as one more line each, so that they
+     * are refused: any role it has active, and the roles MySQL gives every
+     * user (`mandatory_roles`) -- a role's grants are not in SHOW GRANTS,
+     * and with `activate_all_roles_on_login` a mandatory one is in force
+     * without being granted at all. A role granted outright is a line of
+     * SHOW GRANTS's own, and refused as any line but the two taken is.
      *
+     * @internal
      * @return list<string>
      */
-    private static function grants(\PDO $admin): array
+    public static function grants(\PDO $admin): array
     {
         try {
             $listed = $admin->query('SHOW GRANTS');
@@ -222,6 +230,24 @@ final class ServerCopy
         }
         if (\is_string($role) && $role !== '' && $role !== 'NONE') {
             $grants[] = "ROLE {$role}";
+        }
+        try {
+            $statement = $admin->query('SELECT @@GLOBAL.mandatory_roles, @@GLOBAL.activate_all_roles_on_login');
+            $row = $statement === false ? false : $statement->fetch(\PDO::FETCH_NUM);
+            if (!\is_array($row)) {
+                throw new \RuntimeException('The server would not say which roles every user is given (mandatory_roles); nothing was copied.');
+            }
+            $mandatory = trim((string) ($row[0] ?? ''));
+        } catch (\PDOException $e) {
+            // MariaDB, and MySQL before 8.0, have no mandatory roles: the
+            // variable is unknown (1193). Any other failure is not a no.
+            if ((int) ($e->errorInfo[1] ?? 0) !== 1193) {
+                throw new \RuntimeException('The server would not say which roles every user is given (mandatory_roles); nothing was copied.', previous: $e);
+            }
+            $mandatory = '';
+        }
+        if ($mandatory !== '') {
+            $grants[] = "MANDATORY ROLES {$mandatory}";
         }
 
         return array_values(array_map(strval(...), $grants));

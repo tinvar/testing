@@ -418,6 +418,46 @@ describe('a copy on a server', function () {
         'grant option' => [['GRANT ALL PRIVILEGES ON `tinvar\_dump\_%`.* TO `d`@`%` WITH GRANT OPTION'], 'it may grant what it holds to others'],
     ]);
 
+    it('reads the copies\' user\'s grants, its active role and the roles every user is given, and refuses any role', function (?string $mandatory, ?string $why) {
+        $server = new class ($mandatory) extends \PDO {
+            /** @var list<string> */
+            public array $asked = [];
+
+            public function __construct(private ?string $mandatory)
+            {
+                parent::__construct('sqlite::memory:');
+            }
+
+            public function query(string $query, ?int $fetchMode = null, mixed ...$fetchModeArgs): \PDOStatement|false
+            {
+                $this->asked[] = $query;
+                if (str_contains($query, 'mandatory_roles')) {
+                    if ($this->mandatory === null) {
+                        // MariaDB, or MySQL before 8.0: no such variable.
+                        $e = new \PDOException("Unknown system variable 'mandatory_roles'");
+                        $e->errorInfo = ['HY000', 1193, "Unknown system variable 'mandatory_roles'"];
+
+                        throw $e;
+                    }
+
+                    return parent::query("SELECT '{$this->mandatory}', 'ON'");
+                }
+
+                return parent::query(match ($query) {
+                    'SHOW GRANTS' => "SELECT 'GRANT USAGE ON *.* TO `d`@`%`' UNION ALL SELECT 'GRANT ALL PRIVILEGES ON `tinvar\\_dump\\_%`.* TO `d`@`%`'",
+                    'SELECT CURRENT_ROLE()' => "SELECT 'NONE'",
+                });
+            }
+        };
+
+        expect(ServerCopy::grantsConfined(ServerCopy::grants($server)))->toBe($why)
+            ->and($server->asked)->toBe(['SHOW GRANTS', 'SELECT CURRENT_ROLE()', 'SELECT @@GLOBAL.mandatory_roles, @@GLOBAL.activate_all_roles_on_login']);
+    })->with([
+        'no mandatory roles' => ['', null],
+        'a server without them' => [null, null],
+        'a mandatory role' => ['`admin`@`%`', 'every user is given the roles mandatory_roles names'],
+    ]);
+
     it('refuses a DSN it cannot read whole', function (string $dsn, string $why) {
         expect(static fn () => DatabaseSnapshot::of($dsn))->toThrow(\RuntimeException::class, $why);
     })->with([
