@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Testing;
 
+use Tinvar\Orm\CarbonClock;
+
 /**
  * The clock a test moves: `travel(5)->minutes()`.
  *
@@ -57,6 +59,17 @@ final class TestClock
     public function dates(): \Closure
     {
         return $this->date(...);
+    }
+
+    /**
+     * Has Carbon's now() read this clock, which it would otherwise read from
+     * the system: CarbonImmutable::now(), Carbon::now(), and the ORM's
+     * stamps, which ask Carbon. Testing::use() does this for the clock it is
+     * given, and Testing::forget() lets go (CarbonClock).
+     */
+    public function useForCarbon(): void
+    {
+        CarbonClock::follow($this->dates());
     }
 
     /** Moves the clock on by $amount of the unit the returned Travel names. */

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Testing;
 
 use Tinvar\Http\TestableApplication;
+use Tinvar\Orm\CarbonClock;
 use Tinvar\Orm\LazyLoads;
 use Tinvar\Testing\Fakes\BodyFakes;
 
@@ -29,6 +30,7 @@ final class Testing
     /**
      * Makes $app the application the functions call, with the renderer pool
      * render() goes through and the clock travel() moves, when it has them.
+     * Carbon's now() reads that clock too, until forget().
      *
      * The test starts with no query or action faked, whatever an earlier one
      * left in an application it shares, and with the application's lazy
@@ -39,6 +41,7 @@ final class Testing
         $client = new Client($app, $renderer);
         self::$clock = $clock;
         self::$client = $client;
+        $clock?->useForCarbon();
 
         $kernel = $app->kernel();
         if ($kernel->standIns instanceof BodyFakes) {
@@ -73,6 +76,9 @@ final class Testing
             $kernel->standIns->forget();
         }
         $kernel?->orm->recordLazyLoads(null);
+        if (self::$clock !== null) {
+            CarbonClock::follow(null);
+        }
 
         self::$client = null;
         self::$clock = null;

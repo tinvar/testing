@@ -195,6 +195,24 @@ it('moves every part built on the clock together, frozen until the test says', f
     expect(($clock->seconds())())->toBe(1_900_000_000);
 });
 
+// Carbon reads the time on its own; a model stamped, or a moment made, by
+// it moves with the rest of the application, and lets go when the test does.
+it('has Carbon\'s now read the clock, moved as it moves, until the test lets go', function () {
+    $clock = new TestClock(new \DateTimeImmutable('2027-01-15 08:00:00 UTC'));
+
+    try {
+        $clock->useForCarbon();
+        $first = \Carbon\CarbonImmutable::now()->toIso8601ZuluString();
+        $clock->travel(3)->days();
+        $moved = \Carbon\Carbon::now()->toIso8601ZuluString();
+    } finally {
+        \Tinvar\Orm\CarbonClock::follow(null);
+    }
+
+    expect([$first, $moved])->toBe(['2027-01-15T08:00:00Z', '2027-01-18T08:00:00Z'])
+        ->and(\Carbon\CarbonImmutable::now()->year)->toBe((int) gmdate('Y'));
+});
+
 it('counts the statements a piece of work issues, and names them when the count is wrong', function () {
     $h = new Harness();
     $connection = $h->orm->connection();
