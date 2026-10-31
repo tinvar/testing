@@ -322,6 +322,12 @@ describe('a copy on a server', function () {
 
     it('copies a Postgres database into one of its own, reads the original only, and drops the copy', function () {
         $server = postgresDsn() ?? test()->markTestSkipped('No Postgres server to copy on.');
+        foreach (['pg_dump', 'pg_restore'] as $tool) {
+            exec('command -v ' . escapeshellarg($tool) . ' 2>/dev/null', $found, $status);
+            if ($status !== 0) {
+                test()->markTestSkipped("No {$tool} on the PATH to copy Postgres with.");
+            }
+        }
         try {
             $admin = new \PDO($server);
         } catch (\PDOException $e) {
