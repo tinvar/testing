@@ -219,9 +219,9 @@ final class QueueFake implements Queue, Coordination, Wakes
         return $this->queue->batch($id);
     }
 
-    public function addToBatch(string $id, int $jobs): bool
+    public function addToBatch(string $id, int $jobs, int $most): bool
     {
-        return $this->queue->addToBatch($id, $jobs);
+        return $this->queue->addToBatch($id, $jobs, $most);
     }
 
     public function batchJobDone(string $id, string $job, int $now): ?BatchStep
