@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace Tinvar\Testing\Fakes;
 
 use PHPUnit\Framework\Assert;
+use Tinvar\Storage\AppendableStorage;
 use Tinvar\Storage\MemoryStorage;
-use Tinvar\Storage\Storage;
 use Tinvar\Storage\StorageKey;
 use Tinvar\Storage\StorageWriter;
 
@@ -20,8 +20,12 @@ use Tinvar\Storage\StorageWriter;
  * take. A test that reads a key back from a row -- `avatar_key` -- asks about
  * it by that key; one that never sees the key, since the framework draws it
  * at random, asks by the prefix the action declared.
+ *
+ * It takes appends too, as a resumable upload sent through PHP makes them
+ * (ADR 0143): its partial bytes wait under `tinvar-partial/` until the
+ * upload is whole, and are gone once it is kept.
  */
-final class StorageFake implements Storage
+final class StorageFake implements AppendableStorage
 {
     private readonly MemoryStorage $files;
 
@@ -58,6 +62,11 @@ final class StorageFake implements Storage
     public function writer(string $key): StorageWriter
     {
         return $this->files->writer($key);
+    }
+
+    public function append(string $key, int $offset, string $bytes, ?\Closure $guard = null): int
+    {
+        return $this->files->append($key, $offset, $bytes, $guard);
     }
 
     /**
