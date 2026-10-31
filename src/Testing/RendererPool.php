@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Testing;
 
 use Tinvar\Server\RendererBinary;
+use Tinvar\Support\ChildDescriptors;
 use Tinvar\Support\PrivateDirectory;
 
 /**
@@ -246,7 +247,9 @@ final class RendererPool
     {
         $process = proc_open(
             $command,
-            [0 => ['pipe', 'r'], 1 => ['file', $this->log, 'a'], 2 => ['file', $this->log, 'a']],
+            // Nothing this worker holds -- its test database among it --
+            // reaches the renderers (ChildDescriptors).
+            ChildDescriptors::closing([0 => ['pipe', 'r'], 1 => ['file', $this->log, 'a'], 2 => ['file', $this->log, 'a']]),
             $pipes,
             $this->projectRoot,
             $env,
@@ -271,7 +274,7 @@ final class RendererPool
     {
         $process = proc_open(
             ['/bin/sh', '-c', 'log=$1; shift; "$@" </dev/null >>"$log" 2>&1 & echo $!', 'sh', $this->log, ...$command],
-            [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', $this->log, 'a']],
+            ChildDescriptors::closing([0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', $this->log, 'a']]),
             $pipes,
             $this->projectRoot,
             $env,
