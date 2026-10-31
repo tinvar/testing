@@ -69,16 +69,16 @@ final class TenantTreeConformance
             'names a tenant\'s ancestors, parent first and root last' => [static function (\Closure $build): void {
                 $tree = self::build($build, self::TREE);
 
-                Assert::assertSame(['acme-west', 'acme', 'reseller'], $tree->ancestors('acme-west-1'));
-                Assert::assertSame(['reseller'], $tree->ancestors('globex'));
-                Assert::assertSame(['other'], $tree->ancestors('other-child'));
+                Assert::assertSame(['acme-west', 'acme', 'reseller'], self::listed($tree->ancestors('acme-west-1')));
+                Assert::assertSame(['reseller'], self::listed($tree->ancestors('globex')));
+                Assert::assertSame(['other'], self::listed($tree->ancestors('other-child')));
             }],
             'names none above a root, or above a tenant it has no record of' => [static function (\Closure $build): void {
                 $tree = self::build($build, self::TREE);
 
-                Assert::assertSame([], $tree->ancestors('reseller'));
-                Assert::assertSame([], $tree->ancestors('other'));
-                Assert::assertSame([], $tree->ancestors('nobody'));
+                Assert::assertSame([], self::listed($tree->ancestors('reseller')));
+                Assert::assertSame([], self::listed($tree->ancestors('other')));
+                Assert::assertSame([], self::listed($tree->ancestors('nobody')));
             }],
             'names a subtree as its root and every tenant below it, and no other' => [static function (\Closure $build): void {
                 $tree = self::build($build, self::TREE);
@@ -99,7 +99,7 @@ final class TenantTreeConformance
                     $subtree = $tree->subtree($root);
                     foreach ($tenants as $tenant) {
                         Assert::assertSame(
-                            $tenant === $root || \in_array($root, $tree->ancestors($tenant), true),
+                            $tenant === $root || \in_array($root, self::listed($tree->ancestors($tenant)), true),
                             \in_array($tenant, $subtree, true),
                             "subtree('{$root}') and ancestors('{$tenant}') disagree on whether '{$tenant}' is under '{$root}'.",
                         );
@@ -111,14 +111,14 @@ final class TenantTreeConformance
                 $tenants = self::tenantsOf(self::TREE);
 
                 foreach ($tenants as $tenant) {
-                    Assert::assertSame([], array_values(array_diff([...$tree->ancestors($tenant), ...$tree->subtree($tenant)], $tenants)));
+                    Assert::assertSame([], array_values(array_diff([...self::listed($tree->ancestors($tenant)), ...$tree->subtree($tenant)], $tenants)));
                 }
             }],
             'returns on a tree that loops, and the Orm places no one under the loop' => [static function (\Closure $build): void {
                 $tree = self::build($build, ['a' => 'b', 'b' => 'c', 'c' => 'a', 'd' => 'a']);
                 $bounds = new TenantBounds($tree);
                 $tree->subtree('a');
-                $tree->ancestors('d');
+                self::listed($tree->ancestors('d'));
 
                 Assert::assertFalse($bounds->contains('root', 'd'));
                 Assert::assertLessThanOrEqual(3, \count($bounds->ancestors('d')));
@@ -181,5 +181,17 @@ final class TenantTreeConformance
         sort($tenants, SORT_STRING);
 
         return $tenants;
+    }
+
+    /**
+     * An answer of ancestors() as a list: the port may give a list, or a
+     * generator that walks up as it is read, which is read to its end here.
+     *
+     * @param iterable<string> $tenants
+     * @return list<string>
+     */
+    private static function listed(iterable $tenants): array
+    {
+        return \is_array($tenants) ? array_values($tenants) : iterator_to_array($tenants, false);
     }
 }
