@@ -38,6 +38,9 @@ final class Testing
      */
     public static function use(TestableApplication $app, ?RendererPool $renderer = null, ?TestClock $clock = null): Client
     {
+        // Whatever an earlier use() set up let go first: Carbon left on its
+        // clock would read it for the rest of the process.
+        self::forget();
         $client = new Client($app, $renderer);
         self::$clock = $clock;
         self::$client = $client;
