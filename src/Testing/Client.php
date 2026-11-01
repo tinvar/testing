@@ -424,6 +424,13 @@ final readonly class Client
                 $headers['precognition-validate-only'] = implode(',', $this->precognition);
             }
         }
+        // On its own host (ADR 0149), as its page would call it, unless the
+        // test names one: the host its #[Domain], or its panel's, holds it to.
+        $compiled = $kernel->actions->has($name) ? $kernel->actions->get($name) : null;
+        $pattern = $compiled?->host->pattern ?? ($compiled === null ? null : $kernel->entry->panelDomainFor($compiled->panels, $compiled->class));
+        if ($kernel->domains !== null && $pattern !== null && !isset($this->headers['host'])) {
+            $headers['host'] = (string) preg_replace('#^https?://#', '', $kernel->domains->origin($pattern));
+        }
         $request = $this->request('POST', ActionEndpoint::PREFIX . $name, $headers);
 
         $failure = null;
