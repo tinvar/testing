@@ -259,7 +259,7 @@ final readonly class Client
         $request = new Request(
             'POST',
             ActionEndpoint::PREFIX . $name,
-            [...$this->headers, 'content-type' => 'application/x-www-form-urlencoded', 'accept' => 'text/html', 'referer' => "https://localhost{$from}"],
+            [...$this->primaryHost(), ...$this->headers, 'content-type' => 'application/x-www-form-urlencoded', 'accept' => 'text/html', 'referer' => "https://localhost{$from}"],
             [],
             $fields,
             $this->cookies,
@@ -489,6 +489,20 @@ final readonly class Client
         return $kernel->auth->actingAs($this->user, $inner, $this->epoch);
     }
 
+    /**
+     * The host a request names unless the test names one: the primary
+     * host's, as a browser would send it, where the application routes by
+     * host -- which refuses a request naming none (ADR 0149).
+     *
+     * @return array<string, string>
+     */
+    private function primaryHost(): array
+    {
+        $domains = $this->app->kernel()->domains;
+
+        return $domains === null ? [] : ['host' => (string) preg_replace('#^https?://#', '', $domains->origin(null))];
+    }
+
     /** @param array<string, string> $headers */
     private function request(string $method, string $url, array $headers): Request
     {
@@ -515,7 +529,7 @@ final readonly class Client
         $build = fn (array $cookies): Request => new Request(
             $method,
             $path === '' ? '/' : $path,
-            [...['accept' => 'text/html'], ...$this->headers, ...$headers],
+            [...['accept' => 'text/html'], ...$this->primaryHost(), ...$this->headers, ...$headers],
             $method === 'GET' ? $parsed : [],
             [],
             $cookies,
