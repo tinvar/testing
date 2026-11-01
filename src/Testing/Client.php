@@ -492,6 +492,13 @@ final readonly class Client
             );
         }
 
+        // An absolute URL names its host, as a browser sends it: `get('http://admin.localhost:8080/orders')`
+        // asks the admin host for /orders (ADR 0149).
+        if (preg_match('#^https?://([^/?\#]+)(.*)\z#i', $url, $absolute) === 1) {
+            $headers = [...$headers, 'host' => $absolute[1]];
+            $url = $absolute[2] === '' ? '/' : $absolute[2];
+        }
+
         $parts = explode('?', $url, 2);
         $path = $parts[0];
         $query = $parts[1] ?? null;
