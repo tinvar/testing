@@ -11,7 +11,7 @@ use Tinvar\Search\SearchHits;
 use Tinvar\Search\SearchTerms;
 
 /**
- * The search fake (ADR 0153): hand it to Search as its backend, and every
+ * The search fake (ADR 0154): hand it to Search as its backend, and every
  * document is kept in memory, by model and tenant, where a test asks what
  * is indexed and what was searched for.
  *
