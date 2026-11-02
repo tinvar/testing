@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * The search fake (ADR 0152): a Search over it indexes in memory, by model
+ * The search fake (ADR 0153): a Search over it indexes in memory, by model
  * and tenant, and a test asks what was indexed and searched for.
  */
 
