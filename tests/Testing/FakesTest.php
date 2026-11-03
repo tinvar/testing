@@ -210,7 +210,10 @@ it('has Carbon\'s now read the clock, moved as it moves, until the test lets go'
     }
 
     expect([$first, $moved])->toBe(['2027-01-15T08:00:00Z', '2027-01-18T08:00:00Z'])
-        ->and(\Carbon\CarbonImmutable::now()->year)->toBe((int) gmdate('Y'));
+        // Let go: the wall clock again, within a few seconds of it -- not
+        // its year, which a run at midnight on New Year's Eve, or in a zone
+        // other than UTC, reads differently twice.
+        ->and(abs(\Carbon\CarbonImmutable::now()->getTimestamp() - time()))->toBeLessThan(5);
 });
 
 it('counts the statements a piece of work issues, and names them when the count is wrong', function () {
