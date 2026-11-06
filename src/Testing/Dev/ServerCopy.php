@@ -78,9 +78,12 @@ final class ServerCopy
      * could reach any other database is refused. Postgres connects to one
      * database at a time, and keeps the source's user.
      *
+     * $source carries the source's password, as the copies' user's DSN
+     * carries its own: each stays out of a failure's trace.
+     *
      * @throws \RuntimeException when it cannot be copied as above
      */
-    public static function make(string $source, string $directory, #[\SensitiveParameter] ?Secret $mysqlCopy = null, ?\Closure $run = null): self
+    public static function make(#[\SensitiveParameter] string $source, string $directory, #[\SensitiveParameter] ?Secret $mysqlCopy = null, ?\Closure $run = null): self
     {
         [$driver, $sourceDsn] = self::read($source);
         $dsn = $sourceDsn;
@@ -302,8 +305,8 @@ final class ServerCopy
         return [$driver, $parts];
     }
 
-    /** @param array<string, string> $dsn */
-    private static function connect(string $driver, array $dsn, ?string $database = null): \PDO
+    /** @param array<string, string> $dsn the DSN's parts, its password among them */
+    private static function connect(string $driver, #[\SensitiveParameter] array $dsn, ?string $database = null): \PDO
     {
         $parts = $dsn;
         $user = $parts['user'] ?? null;

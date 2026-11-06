@@ -6,6 +6,7 @@ namespace Tinvar\Testing\Dev;
 
 use Tinvar\Config\Configs;
 use Tinvar\Config\FrameworkConfig;
+use Tinvar\Config\Secret;
 use Tinvar\Http\TestableApplication;
 use Tinvar\Orm\Model;
 use Tinvar\Support\BuildProfile;
@@ -22,7 +23,10 @@ use Tinvar\Testing\RendererPool;
  * Both refused before anything is read unless DevTools allows them here.
  * Each render is made on a private copy of the application's database
  * (DatabaseSnapshot) -- an SQLite file, or a database of its own on a
- * Postgres or MySQL server -- through a pool of the application's real renderers
+ * Postgres or MySQL server, the server's DSN handed over in a Secret since
+ * it carries a password (ADR 0173) -- the files the application keeps
+ * beside its database kept beside the copy, in its private directory --
+ * through a pool of the application's real renderers
  * started on a build made for the test profile -- scrubbed of every secret,
  * in the production React build, as `tinvar serve` starts them -- and with
  * an application the caller builds on that copy and that pool, keyed by a
@@ -50,13 +54,17 @@ final class DevToolsCommand
     /**
      * @param string $app the application's directory, where dist-test/ is by default
      * @param string $projectRoot where node_modules and the renderer package are
-     * @param string $database the application's database, which is copied and never written: an
-     *        SQLite file's path, or a pgsql: or mysql: DSN, copied on its server (ADR 0113)
-     * @param \Closure(string, string, string, string|null, string|null): TestableApplication $application the
+     * @param string|Secret $database the application's database, which is copied and never written: an
+     *        SQLite file's path, or a pgsql: or mysql: DSN, copied on its server (ADR 0113) -- in a
+     *        Secret, as an application on a server hands it, since it carries a password (ADR 0173)
+     * @param \Closure(string, string, string, string|null, string|null, string): TestableApplication $application the
      *        application, built on a renderer pool's socket directory, a database, a key and
      *        the build its renderers run -- whose fragment manifest it reads -- or null; and,
      *        rendering through `tinvar dev`, on its dev renderer's socket with no build and the
-     *        deferred manifest its dev server keeps, which says to build it in dev mode
+     *        deferred manifest its dev server keeps, which says to build it in dev mode. Last,
+     *        what to name the files it keeps beside its database from, in place of its own
+     *        database's path (DatabaseSnapshot::$files): the SQLite copy's, or a path in the
+     *        private directory of a copy on a server, whose DSN names no place (ADR 0173)
      * @param list<class-string<Model>> $models the application's models, for the schema
      * @param list<class-string> $configs the application's #[Config] classes
      * @param string|null $log the application's log file
@@ -65,7 +73,8 @@ final class DevToolsCommand
     public function __construct(
         private readonly string $app,
         private readonly string $projectRoot,
-        private readonly string $database,
+        #[\SensitiveParameter]
+        private readonly string|Secret $database,
         private readonly \Closure $application,
         private readonly array $models = [],
         private readonly array $configs = [],
@@ -204,7 +213,7 @@ final class DevToolsCommand
             $snapshot = $this->snapshot();
             $silent = PrivateDirectory::create('tinvar-mcp', owner: getmypid() ?: null);
             register_shutdown_function(static fn () => PrivateDirectory::remove($silent));
-            $kernel = ($this->application)($silent, $snapshot->database, self::key(), null, null)->kernel();
+            $kernel = ($this->application)($silent, $snapshot->database, self::key(), null, null, $snapshot->files)->kernel();
         } catch (\RuntimeException $e) {
             ($this->err)($e->getMessage());
 
@@ -227,11 +236,12 @@ final class DevToolsCommand
      */
     private function snapshot(): DatabaseSnapshot
     {
-        $mysqlCopy = str_starts_with($this->database, 'mysql:')
+        $source = $this->database instanceof Secret ? $this->database->reveal() : $this->database;
+        $mysqlCopy = str_starts_with($source, 'mysql:')
             ? Configs::load(FrameworkConfig::class, $this->env)->dumpMysqlDsn
             : null;
 
-        return DatabaseSnapshot::of($this->database, $mysqlCopy);
+        return DatabaseSnapshot::of($source, $mysqlCopy);
     }
 
     /**
@@ -250,7 +260,7 @@ final class DevToolsCommand
             $snapshot = $this->snapshot();
             try {
                 return self::underTheTestProfile(function () use ($pool, $snapshot, $build, $path, $scenario): array {
-                    $app = ($this->application)($pool->path, $snapshot->database, self::key(), $build, null);
+                    $app = ($this->application)($pool->path, $snapshot->database, self::key(), $build, null, $snapshot->files);
                     try {
                         return new RenderDump($app)->dump($path, $scenario);
                     } finally {
@@ -282,7 +292,7 @@ final class DevToolsCommand
             $snapshot = $this->snapshot();
             try {
                 return self::underTheTestProfile(function () use ($run, $snapshot, $path, $scenario): array {
-                    $app = ($this->application)($run->socket, $snapshot->database, self::key(), null, $run->deferred);
+                    $app = ($this->application)($run->socket, $snapshot->database, self::key(), null, $run->deferred, $snapshot->files);
                     try {
                         return new RenderDump($app)->dump($path, $scenario);
                     } finally {

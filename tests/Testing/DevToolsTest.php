@@ -21,6 +21,7 @@ use Tinvar\Routing\LoadedRoute;
 use Tinvar\Config\Secret;
 use Tinvar\Testing\Dev\DatabaseSnapshot;
 use Tinvar\Testing\Dev\DevTools;
+use Tinvar\Testing\Dev\DevToolsCommand;
 use Tinvar\Testing\Dev\LogTail;
 use Tinvar\Testing\Dev\RenderDump;
 use Tinvar\Testing\Dev\ServerCopy;
@@ -294,7 +295,11 @@ it('renders against a private copy of the database and never writes the original
     expect($copy->query('SELECT COUNT(*) FROM t')?->fetchColumn())->toBe(2)
         ->and(hash_file('sha256', $original))->toBe($before)
         ->and(fileperms($snapshot->path) & 0777)->toBe(0600)
-        ->and(fileperms(\dirname($snapshot->path)) & 0777)->toBe(0700);
+        ->and(fileperms(\dirname($snapshot->path)) & 0777)->toBe(0700)
+        // What the application names the files it keeps beside its
+        // database from: the copy, so they are the copy's (ADR 0173).
+        ->and($snapshot->files)->toBe($snapshot->path)
+        ->and($snapshot->database)->toBe($snapshot->path);
 
     unset($copy);
     $snapshot->remove();
@@ -302,6 +307,114 @@ it('renders against a private copy of the database and never writes the original
 
     expect(static fn () => DatabaseSnapshot::ofSqlite('/nonexistent/shop.sqlite'))
         ->toThrow(\RuntimeException::class, 'no database');
+});
+
+/**
+ * That a copy on a server names the application's files from a path in its
+ * own private directory -- this process's, 0700 -- where nothing is yet,
+ * and never from its DSN (ADR 0173).
+ */
+function privateFiles(DatabaseSnapshot $snapshot): void
+{
+    $directory = \dirname($snapshot->files);
+    clearstatcache();
+    expect($snapshot->path)->toBe('')
+        ->and($snapshot->files)->not->toBe($snapshot->database)
+        ->and($snapshot->files)->toStartWith('/')
+        ->and($snapshot->files)->not->toContain(':')
+        ->and(file_exists($snapshot->files))->toBeFalse()
+        ->and(is_dir($directory))->toBeTrue()
+        ->and(fileowner($directory))->toBe(posix_geteuid())
+        ->and(fileperms($directory) & 0777)->toBe(0700);
+}
+
+it('hands the application a copy of a database it was given in a Secret, and where to keep its files beside it', function () {
+    $original = sys_get_temp_dir() . '/tinvar-devtools-' . bin2hex(random_bytes(6)) . '.sqlite';
+    $pdo = new \PDO("sqlite:{$original}");
+    $pdo->exec('CREATE TABLE t (v TEXT)');
+    unset($pdo);
+    $handed = [];
+    $err = '';
+    $tools = new DevToolsCommand(
+        app: sys_get_temp_dir(),
+        projectRoot: sys_get_temp_dir(),
+        database: new Secret($original),
+        application: static function (string $socket, string $database, string $key, ?string $build, ?string $dev = null, ?string $files = null) use (&$handed): TestableApplication {
+            $handed = ['database' => $database, 'files' => $files, 'is a file' => is_file($database)];
+
+            throw new \RuntimeException('built on what it was handed');
+        },
+        env: ['TINVAR_ENV' => 'local'],
+        out: static function (): void {},
+        err: static function (string $line) use (&$err): void {
+            $err .= $line . "\n";
+        },
+    );
+
+    try {
+        // The declarations' application, built before anything is served.
+        expect($tools->mcp([], fopen('php://memory', 'r'), fopen('php://memory', 'w')))->toBe(1)
+            ->and($err)->toContain('built on what it was handed')
+            ->and($handed['database'] ?? null)->not->toBe($original)
+            ->and($handed['database'] ?? '')->toEndWith('/snapshot.sqlite')
+            ->and($handed['is a file'] ?? false)->toBeTrue()
+            ->and($handed['files'] ?? null)->toBe($handed['database'] ?? null);
+    } finally {
+        @unlink($original);
+    }
+});
+
+it('keeps the password a server\'s DSN carries out of the trace of a copy that fails', function () {
+    $ignoreArgs = ini_get('zend.exception_ignore_args');
+    ini_set('zend.exception_ignore_args', '0');
+    $path = getenv('PATH');
+    // Tools that are there and do nothing, so the copy gets as far as
+    // connecting, to a port nothing listens on.
+    $tools = sys_get_temp_dir() . '/tinvar-devtools-tools-' . bin2hex(random_bytes(4));
+    mkdir($tools, 0700);
+    foreach (['pg_dump', 'pg_restore'] as $tool) {
+        file_put_contents("{$tools}/{$tool}", "#!/bin/sh\nexit 1\n");
+        chmod("{$tools}/{$tool}", 0700);
+    }
+    $password = bin2hex(random_bytes(24));
+    $carries = static function (mixed $value) use (&$carries, $password): bool {
+        if (\is_string($value)) {
+            return str_contains($value, $password);
+        }
+        if (\is_array($value)) {
+            foreach ($value as $item) {
+                if ($carries($item)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    };
+
+    try {
+        foreach (['no tools on the PATH' => '/nonexistent', 'no server to connect to' => $tools] as $case => $on) {
+            putenv("PATH={$on}");
+            $failure = null;
+            try {
+                DatabaseSnapshot::of("pgsql:host=127.0.0.1;port=1;dbname=shop;user=shop;password={$password};connect_timeout=2");
+            } catch (\RuntimeException $e) {
+                $failure = $e;
+            }
+            expect($failure)->not->toBeNull($case);
+            for ($at = $failure; $at !== null; $at = $at->getPrevious()) {
+                expect($at->getTraceAsString())->not->toContain(substr($password, 0, 12), $case)
+                    ->and($at->getMessage())->not->toContain($password, $case);
+                foreach ($at->getTrace() as $frame) {
+                    expect($carries($frame['args'] ?? []))->toBeFalse("{$case}: " . ($frame['class'] ?? '') . '::' . $frame['function']);
+                }
+            }
+        }
+    } finally {
+        putenv($path === false ? 'PATH' : "PATH={$path}");
+        ini_set('zend.exception_ignore_args', (string) $ignoreArgs);
+        exec('rm -rf ' . escapeshellarg($tools));
+    }
 });
 
 // ADR 0113: a Postgres or MySQL database is copied on its server, by its
@@ -358,9 +471,11 @@ describe('a copy on a server', function () {
                 ->and($copy->query('SELECT current_database()')?->fetchColumn())->not->toBe($source)
                 ->and($copy->query('SELECT COUNT(*) FROM customers')?->fetchColumn())->toBe(2)
                 ->and($original->query('SELECT COUNT(*) FROM customers')?->fetchColumn())->toBe(1);
+            privateFiles($snapshot);
 
             unset($copy);
             $snapshot->remove();
+            expect(is_dir(\dirname($snapshot->files)))->toBeFalse();
             $left = $admin->query("SELECT COUNT(*) FROM pg_database WHERE datname LIKE 'tinvar\\_dump\\_%'")?->fetchColumn();
             expect($left)->toBe(0);
         } finally {
@@ -432,9 +547,11 @@ describe('a copy on a server', function () {
                 // What the render is handed cannot reach the live data by name.
                 ->and(static fn () => $copy->query("SELECT * FROM `{$source}`.customers"))->toThrow(\PDOException::class, 'denied')
                 ->and(static fn () => $copy->exec("INSERT INTO `{$source}`.customers VALUES (3, 'x')"))->toThrow(\PDOException::class, 'denied');
+            privateFiles($snapshot);
 
             unset($copy);
             $snapshot->remove();
+            expect(is_dir(\dirname($snapshot->files)))->toBeFalse();
             expect(copiesLeft($admin))->toBe($before);
         });
     });

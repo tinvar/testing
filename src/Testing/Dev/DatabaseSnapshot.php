@@ -19,6 +19,12 @@ use Tinvar\Support\PrivateDirectory;
  * neither reaches the database the developer works with: the original is
  * opened read-only, copied whole and consistent by SQLite itself (`VACUUM
  * INTO`, which a read-only connection may run), and never written.
+ *
+ * What an application keeps in files beside its database -- a log, a mail
+ * log, counts -- it keeps beside the copy, named from $files, so they are
+ * the copy's and go with it: the SQLite copy's own path, or for a copy on a
+ * server, whose DSN names no place, a path in the snapshot's private
+ * directory (ADR 0173).
  */
 final class DatabaseSnapshot
 {
@@ -27,15 +33,25 @@ final class DatabaseSnapshot
     private bool $removed = false;
 
     /**
+     * What the files an application keeps beside its database are named
+     * from: the SQLite copy's path, or for a copy on a server a path in this
+     * snapshot's private directory, where nothing is until the application
+     * writes beside it. Removed with the copy either way.
+     */
+    public readonly string $files;
+
+    /**
      * @param string $path the SQLite copy's file; '' for a copy on a server
      * @param string $database what the application is handed: the file, or the copy's DSN
      */
     private function __construct(
         public readonly string $path,
         private readonly string $directory,
+        #[\SensitiveParameter]
         public readonly string $database = '',
         private readonly ?ServerCopy $server = null,
     ) {
+        $this->files = $path !== '' ? $path : "{$directory}/copy";
         $owner = getmypid() ?: 0;
         register_shutdown_function(function () use ($owner): void {
             // Not in a forked child, which runs shutdown functions too.
@@ -47,10 +63,11 @@ final class DatabaseSnapshot
 
     /**
      * A private copy of the database $source names: an SQLite file's path,
-     * or a pgsql: or mysql: DSN. A MySQL copy is made as $mysqlCopy's user,
-     * one that reaches the copies alone (ServerCopy::make()).
+     * or a pgsql: or mysql: DSN, which carries a password and so stays out
+     * of a failure's trace. A MySQL copy is made as $mysqlCopy's user, one
+     * that reaches the copies alone (ServerCopy::make()).
      */
-    public static function of(string $source, #[\SensitiveParameter] ?Secret $mysqlCopy = null): self
+    public static function of(#[\SensitiveParameter] string $source, #[\SensitiveParameter] ?Secret $mysqlCopy = null): self
     {
         if (!ServerCopy::copies($source)) {
             return self::ofSqlite($source);
