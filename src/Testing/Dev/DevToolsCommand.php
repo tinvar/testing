@@ -214,7 +214,9 @@ final class DevToolsCommand
             $silent = PrivateDirectory::create('tinvar-mcp', owner: getmypid() ?: null);
             register_shutdown_function(static fn () => PrivateDirectory::remove($silent));
             $kernel = ($this->application)($silent, $snapshot->database, self::key(), null, null, $snapshot->files)->kernel();
-        } catch (\RuntimeException $e) {
+        } catch (\RuntimeException|\InvalidArgumentException $e) {
+            // An application that will not be built on its copy says why, as
+            // a render's does; nothing is served.
             ($this->err)($e->getMessage());
 
             return 1;

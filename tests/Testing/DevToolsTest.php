@@ -476,7 +476,8 @@ describe('a copy on a server', function () {
             unset($copy);
             $snapshot->remove();
             expect(is_dir(\dirname($snapshot->files)))->toBeFalse();
-            $left = $admin->query("SELECT COUNT(*) FROM pg_database WHERE datname LIKE 'tinvar\\_dump\\_%'")?->fetchColumn();
+            // This process's copies alone: another test's may be on the server meanwhile.
+            $left = $admin->query("SELECT COUNT(*) FROM pg_database WHERE datname LIKE 'tinvar\\_dump\\_%\\_" . getmypid() . "\\_%'")?->fetchColumn();
             expect($left)->toBe(0);
         } finally {
             unset($original);
@@ -523,9 +524,10 @@ describe('a copy on a server', function () {
         }
     }
 
+    /** This process's copies on the server: another test's may be there meanwhile. */
     function copiesLeft(\PDO $admin): int
     {
-        return \count($admin->query("SHOW DATABASES LIKE 'tinvar\\_dump\\_%'")?->fetchAll(\PDO::FETCH_COLUMN) ?: []);
+        return \count($admin->query("SHOW DATABASES LIKE 'tinvar\\_dump\\_%\\_" . getmypid() . "\\_%'")?->fetchAll(\PDO::FETCH_COLUMN) ?: []);
     }
 
     it('copies a MySQL database into one of its own as the copies\' user, reads the original only, and drops the copy', function () {
