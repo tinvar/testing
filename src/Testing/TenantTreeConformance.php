@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Tinvar\Testing;
 
 use PHPUnit\Framework\Assert;
+use Tinvar\Orm\PagedTenantSubtrees;
+use Tinvar\Orm\SubtreePage;
 use Tinvar\Orm\TenantBounds;
 use Tinvar\Orm\TenantSubtrees;
 
@@ -23,7 +25,8 @@ use Tinvar\Orm\TenantSubtrees;
  * it wherever the implementation reads from first.
  *
  * The Orm holds every answer to the walk's limits itself (TenantBounds): 32
- * levels above a tenant, a stop at a loop, 1,000 tenants to a subtree. The
+ * levels above a tenant, a stop at a loop, 10,000 tenants to a subtree read
+ * at once, and pages that keep to the walk (ADR 0196). The
  * cases that show those hold with this implementation behind the Orm are
  * here too. What the Orm cannot check is the port's contract, and the rest
  * of the cases are that:
@@ -35,7 +38,10 @@ use Tinvar\Orm\TenantSubtrees;
  *   when the root is the tenant or among its ancestors;
  * - neither names a tenant the tree does not hold;
  * - both return on a tree that loops (a case that never returns is a
- *   failure only a timeout can report: run the kit with one).
+ *   failure only a timeout can report: run the kit with one);
+ * - a port that pages (PagedTenantSubtrees) answers descendantsAfter() as
+ *   subtree() does, in byte order, after the name it is given, no more
+ *   than asked.
  *
  * Each case fails as a PHPUnit assertion, so it reads as any test's would.
  */
@@ -134,12 +140,14 @@ final class TenantTreeConformance
                 Assert::assertFalse($bounds->contains('level-' . (TenantBounds::MAX_DEPTH + 1), 'level-0'));
                 Assert::assertCount(TenantBounds::MAX_DEPTH, $bounds->ancestors('level-0'));
             }],
-            'is refused by the Orm past 1,000 tenants to a subtree, rather than read in part' => [static function (\Closure $build): void {
+            // The Orm's limit lowered to 100, so the case need not build
+            // 10,000 tenants to show a subtree past it is refused whole.
+            'is refused by the Orm past its limit to a subtree read at once, rather than read in part' => [static function (\Closure $build): void {
                 $wide = [];
-                for ($i = 1; $i <= TenantBounds::MAX_SUBTREE; $i++) {
+                for ($i = 1; $i <= 100; $i++) {
                     $wide["t{$i}"] = 'root';
                 }
-                $bounds = new TenantBounds(self::build($build, $wide));
+                $bounds = new TenantBounds(self::build($build, $wide), maxSubtree: 100);
 
                 Assert::assertSame(['t1'], $bounds->subtree('t1'));
                 try {
@@ -147,7 +155,24 @@ final class TenantTreeConformance
                 } catch (\LengthException) {
                     return;
                 }
-                Assert::fail('A subtree of 1,001 tenants was read rather than refused.');
+                Assert::fail('A subtree of 101 tenants was read at once rather than refused past a limit of 100.');
+            }],
+            'is paged by the Orm in byte order, each tenant once, and from where a walk stopped' => [static function (\Closure $build): void {
+                $tree = self::build($build, self::TREE);
+                $bounds = new TenantBounds($tree);
+                $pages = static fn (string $root, int $size, ?string $after = null): array => array_map(
+                    static fn (SubtreePage $page): array => $page->tenants,
+                    iterator_to_array($bounds->pages($root, $size, $after), false),
+                );
+
+                Assert::assertSame([['acme', 'acme-west'], ['acme-west-1', 'globex'], ['reseller']], $pages('reseller', 2));
+                Assert::assertSame([['globex', 'reseller']], $pages('reseller', 5, 'acme-west-1'));
+                Assert::assertSame([['nobody']], $pages('nobody', 5));
+                if ($tree instanceof PagedTenantSubtrees) {
+                    Assert::assertSame(['acme', 'acme-west', 'acme-west-1', 'globex'], $tree->descendantsAfter('reseller', null, 10));
+                    Assert::assertSame(['acme-west-1'], $tree->descendantsAfter('reseller', 'acme-west', 1));
+                    Assert::assertSame([], $tree->descendantsAfter('reseller', 'globex', 10));
+                }
             }],
         ];
     }
