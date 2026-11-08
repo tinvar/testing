@@ -12,7 +12,7 @@ use Tinvar\Generators\Sources;
  * The test `tinvar make:resource` writes beside a resource (ADR 0151),
  * through this package's functions -- get(), action(), query(),
  * actingAs() -- which the framework does not depend on: the app's
- * bin/tinvar hands this to its console where tinvar/testing is installed,
+ * An app's tinvar hands this to its console where tinvar/testing is installed,
  * as it hands codegen's command, and without it no test is written.
  */
 final class ResourceTestSource

@@ -8,7 +8,7 @@ use Tinvar\Server\ServeCommand;
 use Tinvar\Support\PrivateDirectory;
 
 /**
- * A `tinvar dev` running for an application on this machine, as `render
+ * A `tinvar serve --dev` running for an application on this machine, as `render
  * --dump --dev` and `mcp --dev` find it: the dev renderer's socket, and
  * the deferred manifest it keeps beside it (ADR 0132).
  *
@@ -46,7 +46,7 @@ final readonly class DevServerRun
         // Without them, whose a directory is and whether its serve still
         // runs cannot be told: nothing is found rather than anything trusted.
         if (!\function_exists('posix_geteuid') || !\function_exists('posix_kill')) {
-            throw new \RuntimeException('Rendering through `tinvar dev` needs PHP\'s posix extension, to tell whose its run is.');
+            throw new \RuntimeException('Rendering through `tinvar serve --dev` needs PHP\'s posix extension, to tell whose its run is.');
         }
         $app = realpath($app) ?: $app;
         $base = rtrim($base ?? (is_dir('/tmp') ? '/tmp' : sys_get_temp_dir()), '/');
@@ -61,13 +61,13 @@ final readonly class DevServerRun
 
         if ($found === []) {
             throw new \RuntimeException(
-                "No `tinvar dev` is serving {$app} on this machine. Start one, and render through it with --dev; "
+                "No `tinvar serve --dev` is serving {$app} on this machine. Start one, and render through it with --dev; "
                 . 'or render through a test build without --dev.',
             );
         }
         if (\count($found) > 1) {
             throw new \RuntimeException(
-                \count($found) . " runs of `tinvar dev` serve {$app}; stop all but one, so it is clear which renders.",
+                \count($found) . " runs of `tinvar serve --dev` serve {$app}; stop all but one, so it is clear which renders.",
             );
         }
 

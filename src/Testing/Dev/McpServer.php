@@ -534,7 +534,7 @@ final class McpServer
     private function renderDump(array $arguments): array
     {
         if ($this->dump === null) {
-            throw new \RuntimeException('Nothing can be rendered here: start the server with a build made for the test profile, or with --dev while `tinvar dev` runs.');
+            throw new \RuntimeException('Nothing can be rendered here: start the server with a build made for the test profile, or with --dev while `tinvar serve --dev` runs.');
         }
         $path = $arguments['path'] ?? null;
         $scenario = $arguments['scenario'] ?? null;

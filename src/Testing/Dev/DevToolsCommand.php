@@ -33,7 +33,7 @@ use Tinvar\Testing\RendererPool;
  * key made for the one render: what the dump shows was signed by nothing
  * the application's real sessions would take.
  *
- * With --dev, the renderer is instead the dev server of the `tinvar dev`
+ * With --dev, the renderer is instead the dev server of the `tinvar serve --dev`
  * running for the application (DevServerRun), and the application is built
  * in dev mode, with the deferred manifest that dev server keeps: the page
  * as the developer's browser is drawn it, from source, with no build to
@@ -60,7 +60,7 @@ final class DevToolsCommand
      * @param \Closure(string, string, string, string|null, string|null, string): TestableApplication $application the
      *        application, built on a renderer pool's socket directory, a database, a key and
      *        the build its renderers run -- whose fragment manifest it reads -- or null; and,
-     *        rendering through `tinvar dev`, on its dev renderer's socket with no build and the
+     *        rendering through `tinvar serve --dev`, on its dev renderer's socket with no build and the
      *        deferred manifest its dev server keeps, which says to build it in dev mode. Last,
      *        what to name the files it keeps beside its database from, in place of its own
      *        database's path (DatabaseSnapshot::$files): the SQLite copy's, or a path in the
@@ -174,7 +174,7 @@ final class DevToolsCommand
             }
         }
         if ($dev && $build !== null) {
-            ($this->err)('--dev renders through `tinvar dev`, and --build through a build: one or the other.');
+            ($this->err)('--dev renders through `tinvar serve --dev`, and --build through a build: one or the other.');
 
             return self::USAGE;
         }
@@ -194,7 +194,7 @@ final class DevToolsCommand
                 // Found again at each render: a dev run may be restarted
                 // while the server answers, and one stopped renders nothing.
                 DevServerRun::find($this->app);
-                $directory = '`tinvar dev`';
+                $directory = '`tinvar serve --dev`';
                 $dump = $this->devDumper();
             } else {
                 $directory = $this->build($build);
@@ -276,7 +276,7 @@ final class DevToolsCommand
     }
 
     /**
-     * Renders a path through the dev server of the `tinvar dev` running for
+     * Renders a path through the dev server of the `tinvar serve --dev` running for
      * the application, found afresh each time, on a fresh copy of the
      * database and with a key of its own: the application built in dev
      * mode, with the deferred manifest the dev server keeps from its module

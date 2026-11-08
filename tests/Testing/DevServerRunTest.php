@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * Finding the `tinvar dev` that `render --dump --dev` and `mcp --dev`
+ * Finding the `tinvar serve --dev` that `render --dump --dev` and `mcp --dev`
  * render through (ADR 0132): one serve --dev's private directory, for this
  * application, by its record -- and nothing about that directory taken on
  * trust, since what listens on its socket is handed the page's props.
@@ -70,7 +70,7 @@ it('finds nothing in a run it cannot vouch for', function (\Closure $spoil) {
     [$directory] = run($base, $app);
     $spoil($directory, $app);
 
-    expect(fn () => DevServerRun::find($app, $base))->toThrow(\RuntimeException::class, 'No `tinvar dev` is serving');
+    expect(fn () => DevServerRun::find($app, $base))->toThrow(\RuntimeException::class, 'No `tinvar serve --dev` is serving');
 })->with([
     'a directory others may enter' => [static fn (string $d): bool => chmod($d, 0755)],
     'a serve that has gone' => [static fn (string $d): int|false => file_put_contents("{$d}/owner.pid", '999999')],
@@ -99,7 +99,7 @@ it('refuses to choose between two runs of the same application', function () {
     run($base, $app);
     run($base, $app);
 
-    expect(fn () => DevServerRun::find($app, $base))->toThrow(\RuntimeException::class, '2 runs of `tinvar dev`');
+    expect(fn () => DevServerRun::find($app, $base))->toThrow(\RuntimeException::class, '2 runs of `tinvar serve --dev`');
 });
 
 it('takes --dev or --build, never both, and says when no dev run serves the application', function () {
@@ -120,7 +120,7 @@ it('takes --dev or --build, never both, and says when no dev run serves the appl
     expect($tools->render(['--dump', '/', '--dev', '--build=/tmp']))->toBe(DevToolsCommand::USAGE)
         ->and($tools->mcp(['--dev', '--build=/tmp']))->toBe(DevToolsCommand::USAGE)
         ->and($tools->render(['--dump', '/', '--dev']))->toBe(1)
-        ->and($err)->toContain('No `tinvar dev` is serving');
+        ->and($err)->toContain('No `tinvar serve --dev` is serving');
 });
 
 it('is refused for --dev where the environment says production, as without it', function () {
