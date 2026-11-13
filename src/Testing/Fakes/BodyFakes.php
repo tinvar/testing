@@ -26,8 +26,8 @@ use Tinvar\Support\StandIns;
  *
  * Emptied between tests by Testing::forget() and Testing::use(), so one
  * test's fake cannot answer the next one's call even where an application
- * outlives a test. Refused where the environment says production, as the
- * testing Client is.
+ * outlives a test. Refused unless the environment says this is a test's or
+ * a developer's machine, as the testing Client is (ADR 0213).
  */
 final class BodyFakes implements StandIns
 {
@@ -39,9 +39,9 @@ final class BodyFakes implements StandIns
 
     public function __construct()
     {
-        $marker = DevMode::productionMarker(getenv());
-        if ($marker !== null) {
-            throw new \LogicException("Query and action fakes are refused: {$marker}=production.");
+        $why = DevMode::notDevelopment();
+        if ($why !== null) {
+            throw new \LogicException("Query and action fakes are refused: {$why}. Set TINVAR_ENV=testing where tests run.");
         }
     }
 

@@ -69,11 +69,12 @@ final readonly class Client
         private bool $leakCheck = true,
     ) {
         // A client signs anyone in without a password and calls entry points
-        // past their transport. Fail closed where the environment says this
-        // is production, as dev mode does (DevMode).
-        $marker = DevMode::productionMarker(getenv());
-        if ($marker !== null) {
-            throw new \LogicException("The testing layer is refused: {$marker}=production.");
+        // past their transport. Fail closed unless the environment says this
+        // is a test's or a developer's machine, as dev mode does (DevMode,
+        // ADR 0213): phpunit.xml sets TINVAR_ENV=testing.
+        $why = DevMode::notDevelopment();
+        if ($why !== null) {
+            throw new \LogicException("The testing layer is refused: {$why}. Set TINVAR_ENV=testing where tests run (phpunit.xml's <env>).");
         }
     }
 
