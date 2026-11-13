@@ -26,9 +26,10 @@ use Tinvar\Support\BuildProfile;
  *     local, development or testing -- unset is production -- checked again
  *     here, whatever the application checked.
  *   - The profile needs a build made for it, `tinvar build --profile=test`,
- *     which the application holds its build to before it calls this: an
- *     image's production build cannot be given the endpoint by its
- *     environment.
+ *     which the application holds its build to before it calls this, and
+ *     which this checks again of the build directory it is handed (ADR
+ *     0223): an image's production build cannot be given the endpoint by
+ *     its environment.
  *   - It needs a run: a private directory the runner made, holding the hash
  *     of a token only the runner has.
  *   - Each request must come from loopback, naming loopback, with that
@@ -53,17 +54,20 @@ final class BrowserTests implements Application, Terminable
     }
 
     /**
-     * $app, served to the run TINVAR_TEST_RUN names.
+     * $app, served from the build in $build to the run TINVAR_TEST_RUN names.
      *
+     * @param string $build the build directory the application serves, BuildProfile::buildDirectory()
      * @param array<string, string>|null $env the environment; the process's own by default
-     * @throws \RuntimeException unless the profile is test, and allowed here, and a run is named
+     * @throws \RuntimeException unless the profile is test, and allowed here, the build was made for
+     *         it, and a run is named
      */
-    public static function around(BrowserTestable $app, ?array $env = null): self
+    public static function around(BrowserTestable $app, string $build, ?array $env = null): self
     {
         $env ??= array_filter(getenv(), \is_string(...));
         if (BuildProfile::fromEnvironment($env) !== BuildProfile::TEST) {
             throw new \RuntimeException('The browser test endpoint is served under ' . BuildProfile::ENV . '=test alone.');
         }
+        BuildProfile::assertBuild(BuildProfile::TEST, $build);
 
         return new self($app, BrowserTestRun::fromEnvironment($env));
     }

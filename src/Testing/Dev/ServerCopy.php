@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Testing\Dev;
 
 use Tinvar\Config\Secret;
+use Tinvar\Support\StateFile;
 
 /**
  * A copy of a Postgres or MySQL database in a database of its own on the
@@ -47,7 +48,7 @@ final class ServerCopy
     /** What every copy's name starts with; nothing else is ever dropped. */
     public const string PREFIX = 'tinvar_dump_';
 
-    /** A copy's name: the prefix, this host, the process that made it, and a random part. */
+    /** A copy's name: the prefix, this machine (machine()), the process that made it, and a random part. */
     private const string NAME = '/^tinvar_dump_[0-9a-f]{8}_[1-9][0-9]{0,9}_[0-9a-f]{8}\z/';
 
     /** Where a MySQL copy's own user is named: a DSN whose user reaches the copies alone. */
@@ -107,7 +108,7 @@ final class ServerCopy
         }
 
         // Opened for the two statements it sends -- CREATE DATABASE, and the
-        // sweep's DROPs of this host's abandoned copies -- and closed: no
+        // sweep's DROPs of this machine's abandoned copies -- and closed: no
         // connection to the live database stays open while anything renders.
         $admin = self::connect($driver, $dsn);
         if ($driver === 'mysql') {
@@ -118,8 +119,14 @@ final class ServerCopy
                 throw new \RuntimeException('The user ' . self::MYSQL_COPY_ENV . " names is not one that reaches the copies alone: {$why}. Nothing was copied.");
             }
         }
-        self::dropAbandoned($driver, $admin);
-        $name = self::PREFIX . substr(hash('sha256', (string) gethostname()), 0, 8) . '_' . (getmypid() ?: 1) . '_' . bin2hex(random_bytes(4));
+        // This machine's mark, and the sweep of its abandoned copies, only
+        // where it has one: without, a copy is named for no machine, and
+        // no sweep reads another machine's live copy as this one's.
+        $machine = self::machine();
+        if ($machine !== null) {
+            self::dropAbandoned($driver, $admin, $machine);
+        }
+        $name = self::PREFIX . ($machine ?? bin2hex(random_bytes(4))) . '_' . (getmypid() ?: 1) . '_' . bin2hex(random_bytes(4));
         $copy = new self($driver, $name, $dsn, $sourceDsn);
         try {
             $admin->exec($driver === 'pgsql' ? "CREATE DATABASE \"{$name}\" TEMPLATE template0" : "CREATE DATABASE `{$name}`");
@@ -498,13 +505,55 @@ final class ServerCopy
         }
     }
 
-    /** Drops copies this host's processes made that are no longer running. */
-    private static function dropAbandoned(string $driver, \PDO $admin): void
+    /**
+     * What a copy's name says of the machine and user that made it: eight
+     * hex digits of the host name hashed with a random id kept in this
+     * user's state directory (`dump-copies.machine`), made the first time
+     * it is asked for. Null where there is no state directory, or the id
+     * kept is not one this wrote.
+     *
+     * The host name alone named two machines called the same -- containers,
+     * CI runners, laptops left at their default name -- alike, and each
+     * one's sweep read the other's live copies, whose processes it could
+     * not see, as abandoned (ADR 0223).
+     *
+     * @param array<string, string>|null $env the environment read; the process's own by default
+     */
+    public static function machine(?array $env = null): ?string
+    {
+        $directory = StateFile::directory($env);
+        if ($directory === null) {
+            return null;
+        }
+        $file = "{$directory}/dump-copies.machine";
+        if (!is_file($file) && !is_link($file)) {
+            if (!is_dir($directory)) {
+                @mkdir($directory, 0700, true);
+            }
+            $handle = @fopen($file, 'x');
+            if ($handle !== false) {
+                try {
+                    chmod($file, 0600);
+                    fwrite($handle, bin2hex(random_bytes(16)) . "\n");
+                } finally {
+                    fclose($handle);
+                }
+            }
+        }
+        $id = is_file($file) && !is_link($file) ? trim((string) @file_get_contents($file)) : '';
+        if (preg_match('/^[0-9a-f]{32}\z/', $id) !== 1) {
+            return null;
+        }
+
+        return substr(hash('sha256', (string) gethostname() . "\0" . $id), 0, 8);
+    }
+
+    /** Drops copies this machine's processes made that are no longer running. */
+    private static function dropAbandoned(string $driver, \PDO $admin, string $host): void
     {
         if (!\function_exists('posix_kill')) {
             return;
         }
-        $host = substr(hash('sha256', (string) gethostname()), 0, 8);
         $listed = $admin->query($driver === 'pgsql'
             ? "SELECT datname FROM pg_database WHERE datname LIKE 'tinvar\\_dump\\_%'"
             : "SHOW DATABASES LIKE 'tinvar\\_dump\\_%'");

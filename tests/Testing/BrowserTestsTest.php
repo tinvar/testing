@@ -106,6 +106,31 @@ final class Recorder implements BrowserTestable
 }
 
 /**
+ * A build directory whose record says it was made for $profile, made once
+ * a process and removed when it ends; production's says nothing, as a
+ * production build's does.
+ */
+function build(string $profile = 'test'): string
+{
+    static $made = [];
+    if (!isset($made[$profile])) {
+        $directory = sys_get_temp_dir() . '/tinvar-build-' . $profile . '-' . bin2hex(random_bytes(4));
+        mkdir("{$directory}/rsc", 0700, true);
+        if ($profile !== 'production') {
+            file_put_contents("{$directory}/rsc/profile.json", json_encode(['format' => 1, 'profile' => $profile]));
+        }
+        register_shutdown_function(static function () use ($directory): void {
+            @unlink("{$directory}/rsc/profile.json");
+            @rmdir("{$directory}/rsc");
+            @rmdir($directory);
+        });
+        $made[$profile] = $directory;
+    }
+
+    return $made[$profile];
+}
+
+/**
  * A run, the application, and the endpoint in front of it, for $test.
  *
  * @param \Closure(BrowserTests, Recorder, string, string): void $test given the
@@ -116,7 +141,7 @@ function served(\Closure $test): void
     ['directory' => $directory, 'token' => $token] = BrowserTestRun::prepare();
     try {
         $app = new Recorder();
-        $tests = BrowserTests::around($app, ['TINVAR_PROFILE' => 'test', 'TINVAR_ENV' => 'testing', 'TINVAR_TEST_RUN' => $directory]);
+        $tests = BrowserTests::around($app, build(), ['TINVAR_PROFILE' => 'test', 'TINVAR_ENV' => 'testing', 'TINVAR_TEST_RUN' => $directory]);
         $test($tests, $app, $token, $directory);
     } finally {
         BrowserTestRun::remove($directory);
@@ -160,7 +185,7 @@ function decoded(Response $response): array
 it('is not made outside the test profile', function (array $env) {
     ['directory' => $directory] = BrowserTestRun::prepare();
     try {
-        BrowserTests::around(new Recorder(), [...$env, 'TINVAR_TEST_RUN' => $directory]);
+        BrowserTests::around(new Recorder(), build(), [...$env, 'TINVAR_TEST_RUN' => $directory]);
     } finally {
         BrowserTestRun::remove($directory);
     }
@@ -172,7 +197,7 @@ it('is not made outside the test profile', function (array $env) {
 it('is not made where the environment says production, or says nothing', function (array $env) {
     ['directory' => $directory] = BrowserTestRun::prepare();
     try {
-        BrowserTests::around(new Recorder(), ['TINVAR_PROFILE' => 'test', 'TINVAR_TEST_RUN' => $directory, ...$env]);
+        BrowserTests::around(new Recorder(), build(), ['TINVAR_PROFILE' => 'test', 'TINVAR_TEST_RUN' => $directory, ...$env]);
     } finally {
         BrowserTestRun::remove($directory);
     }
@@ -183,15 +208,35 @@ it('is not made where the environment says production, or says nothing', functio
     'NODE_ENV' => [['TINVAR_ENV' => 'testing', 'NODE_ENV' => 'production']],
 ])->throws(\RuntimeException::class, 'TINVAR_PROFILE=test is refused');
 
+// The profile alone was what around() held to; the build a test server
+// serves must say it was made for the test profile too, whatever the
+// application checked before it called this (ADR 0223).
+it('is not made over a build that was not made for the test profile', function (string $profile, string $refusal) {
+    ['directory' => $directory] = BrowserTestRun::prepare();
+    try {
+        BrowserTests::around(new Recorder(), build($profile), ['TINVAR_PROFILE' => 'test', 'TINVAR_ENV' => 'testing', 'TINVAR_TEST_RUN' => $directory]);
+        $made = true;
+    } catch (\RuntimeException $e) {
+        $made = $e->getMessage();
+    } finally {
+        BrowserTestRun::remove($directory);
+    }
+
+    expect($made)->toBeString()->toContain($refusal);
+})->with([
+    'production' => ['production', 'was made for production'],
+    'staging' => ['staging', 'was made with --profile=staging'],
+]);
+
 it('is not made without a run', function () {
-    BrowserTests::around(new Recorder(), ['TINVAR_PROFILE' => 'test', 'TINVAR_ENV' => 'testing']);
+    BrowserTests::around(new Recorder(), build(), ['TINVAR_PROFILE' => 'test', 'TINVAR_ENV' => 'testing']);
 })->throws(\RuntimeException::class, 'no TINVAR_TEST_RUN names the run');
 
 it('is not made for a directory that is not a run\'s', function () {
     $directory = sys_get_temp_dir() . '/tinvar-not-a-run-' . bin2hex(random_bytes(4));
     mkdir($directory, 0700);
     try {
-        BrowserTests::around(new Recorder(), ['TINVAR_PROFILE' => 'test', 'TINVAR_ENV' => 'testing', 'TINVAR_TEST_RUN' => $directory]);
+        BrowserTests::around(new Recorder(), build(), ['TINVAR_PROFILE' => 'test', 'TINVAR_ENV' => 'testing', 'TINVAR_TEST_RUN' => $directory]);
     } finally {
         rmdir($directory);
     }

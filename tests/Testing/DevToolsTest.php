@@ -421,6 +421,36 @@ it('keeps the password a server\'s DSN carries out of the trace of a copy that f
 // own dump and restore tools, into a database of its own -- and what can
 // not be copied that way is refused before anything is made.
 describe('a copy on a server', function () {
+    // The sweep of abandoned copies drops a copy whose process is gone on
+    // this machine. Named by the host name alone, two machines called the
+    // same -- containers, CI runners, two laptops left at their default --
+    // read each other's live copies as abandoned, and dropped them (ADR 0223).
+    it('names this machine by a random id kept in this user\'s state directory, not by its host name alone', function () {
+        $state = sys_get_temp_dir() . '/tinvar-machine-' . bin2hex(random_bytes(4));
+        $other = sys_get_temp_dir() . '/tinvar-machine-' . bin2hex(random_bytes(4));
+        try {
+            $mine = ServerCopy::machine(['XDG_STATE_HOME' => $state]);
+            $file = "{$state}/tinvar/dump-copies.machine";
+
+            expect($mine)->toMatch('/^[0-9a-f]{8}\z/')
+                ->and(ServerCopy::machine(['XDG_STATE_HOME' => $state]))->toBe($mine)
+                ->and(fileperms($file) & 0777)->toBe(0600)
+                ->and(ServerCopy::machine(['XDG_STATE_HOME' => $other]))->not->toBe($mine)
+                // Nowhere to keep one, and no sweep: a copy left behind is
+                // left, never another machine's dropped.
+                ->and(ServerCopy::machine(['HOME' => 'relative']))->toBeNull();
+
+            file_put_contents($file, 'not an id');
+            expect(ServerCopy::machine(['XDG_STATE_HOME' => $state]))->toBeNull();
+        } finally {
+            foreach ([$state, $other] as $directory) {
+                @unlink("{$directory}/tinvar/dump-copies.machine");
+                @rmdir("{$directory}/tinvar");
+                @rmdir($directory);
+            }
+        }
+    });
+
     /** The Postgres server the tests use, as a DSN: TINVAR_TEST_PGSQL_DSN, or a local one pg_isready finds. */
     function postgresDsn(): ?string
     {
