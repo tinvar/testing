@@ -5,6 +5,7 @@
   "license": "MIT",
   "require": {
     "php": ">=8.5",
+    "ext-posix": "*",
     "pestphp/pest": "^5.3",
     "tinvar/database": "0.4.*",
     "tinvar/framework": "0.4.*",

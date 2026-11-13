@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Testing;
 
 use Tinvar\Orm\Connection;
+use Tinvar\Support\Posix;
 use Tinvar\Support\PrivateDirectory;
 
 /**
@@ -202,7 +203,8 @@ final class TestDatabase
     /** The template directory: this user's, entered by no one else, or refused. */
     private static function templates(): string
     {
-        $user = \function_exists('posix_geteuid') ? posix_geteuid() : 0;
+        // Whose it is, or refused: never a directory nobody checked (ADR 0212).
+        $user = Posix::effectiveUser('the test database template directory');
         $directory = rtrim(sys_get_temp_dir(), '/') . "/tinvar-db-templates-{$user}";
 
         if (!file_exists($directory) && !is_link($directory)) {
@@ -211,7 +213,7 @@ final class TestDatabase
         clearstatcache(true, $directory);
 
         if (is_link($directory) || !is_dir($directory)
-            || (\function_exists('posix_geteuid') && fileowner($directory) !== $user)
+            || fileowner($directory) !== $user
             || (fileperms($directory) & 0o077) !== 0) {
             throw new \RuntimeException(
                 "{$directory} is not a directory only this user owns and can enter; test databases will not be built from it.",

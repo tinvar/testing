@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Testing\Browser;
 
 use Tinvar\Support\BuildProfile;
+use Tinvar\Support\Posix;
 use Tinvar\Support\PrivateDirectory;
 
 /**
@@ -259,7 +260,7 @@ final class BrowserTestRun
 
         $stat = @stat($path);
         if ($stat === false
-            || (\function_exists('posix_geteuid') && $stat['uid'] !== posix_geteuid())
+            || $stat['uid'] !== Posix::effectiveUser("the browser test run's {$kind} {$path}")
             || ($stat['mode'] & 0077) !== 0) {
             throw new \RuntimeException("The browser test run's {$kind} {$path} is not private to this user; refusing it.");
         }
